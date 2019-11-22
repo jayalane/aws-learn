@@ -8,13 +8,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	count "github.com/jayalane/go-counter"
 	"github.com/jayalane/go-tinyconfig"
 	"log"
 	"math/rand"
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -35,10 +35,6 @@ type context struct {
 	objectChan chan objectChanItem
 	done       chan int
 	wg         *sync.WaitGroup
-	enc        uint64
-	tot        uint64
-	err403     uint64
-	err404     uint64
 }
 
 var theCtx context
@@ -53,21 +49,19 @@ func handleObject() {
 	for {
 		select {
 		case kb := <-theCtx.objectChan:
-			if theCtx.tot%10000 == 0 {
-				fmt.Println("Total done so far", theCtx.tot, theCtx.enc)
-			}
 			k := kb.object
 			b := kb.bucket
 			req := &s3.HeadObjectInput{Key: aws.String(k),
 				Bucket: aws.String(b)}
-			atomic.AddUint64(&theCtx.tot, 1)
+			count.Incr("total")
 			head, err := svc.HeadObject(req)
 			if err != nil {
 				if reqerr, ok := err.(awserr.RequestFailure); ok {
 					if reqerr.StatusCode() == 404 {
-						atomic.AddUint64(&theCtx.err404, 1)
+						count.Incr("404 error")
 					} else if reqerr.StatusCode() == 403 {
-						atomic.AddUint64(&theCtx.err403, 1)
+						count.Incr("403 error")
+
 					} else {
 						fmt.Println("Got request error on object", k, err)
 					}
@@ -77,10 +71,10 @@ func handleObject() {
 			} else {
 				if (head.ServerSideEncryption == nil) || 0 != strings.Compare(*head.ServerSideEncryption,
 					"AES256") {
-					if rand.Float64() < (1.0 / (float64(theCtx.enc))) {
+					if rand.Float64() < (1.0 / (float64(count.ReadSync("encrypted")))) {
 						fmt.Println("ERROR: ", b, k, head.ServerSideEncryption)
 					}
-					atomic.AddUint64(&theCtx.enc, 1)
+					count.Incr("encrypted")
 				}
 			}
 			theCtx.wg.Done()
@@ -120,6 +114,7 @@ func handleBucket() {
 }
 
 func main() {
+	count.InitCounters()
 	// config
 	if len(os.Args) > 1 && os.Args[1] == "--dumpConfig" {
 		log.Println(defaultConfig)
@@ -164,9 +159,6 @@ func main() {
 		theCtx.bucketChan <- aws.StringValue(b.Name)
 	}
 	theCtx.wg.Wait()
-	fmt.Println("Total objects:", theCtx.tot)
-	fmt.Println("Encrypted objects:", theCtx.enc)
-	fmt.Println("404 Error:", theCtx.err404)
-	fmt.Println("403 Error:", theCtx.err403)
+	count.LogCounters()
 	//	<-theCtx.done
 }
