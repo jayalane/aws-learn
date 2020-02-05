@@ -15,13 +15,19 @@ import (
 	"github.com/jayalane/go-tinyconfig"
 	"log"
 	"math/rand"
+	"net"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 )
 
 var theConfig config.Config
 var defaultConfig = `#
+oneBucket = true
+oneBucketName = bucket_name
+oneBucketReencrypt = false
+checkOrgAccounts = false
 numAccountHandlers = 1
 numBucketHandlers = 10
 numObjectHandlers = 1000
@@ -30,14 +36,14 @@ numObjectHandlers = 1000
 
 // info about an object to check
 type objectChanItem struct {
-	acctId string
+	acctID string
 	bucket string
 	object string
 }
 
 // info about a bucket to check
 type bucketChanItem struct {
-	acctId string
+	acctID string
 	bucket string
 }
 
@@ -74,8 +80,8 @@ func getSessForAcct(a string) *session.Session {
 }
 
 // given a master session and an account ID, generate an assumed role credentials
-func getCredentials(session session.Session, acct_id string) *credentials.Credentials {
-	a := "arn:aws:iam::" + acct_id + ":role/OrganizationAccountAccessRole"
+func getCredentials(session session.Session, acctID string) *credentials.Credentials {
+	a := "arn:aws:iam::" + acctID + ":role/OrganizationAccountAccessRole"
 	creds := stscreds.NewCredentials(&session, a)
 	return creds
 }
@@ -84,22 +90,30 @@ func getCredentials(session session.Session, acct_id string) *credentials.Creden
 
 // go routine to get objects and see if they are encrypted
 func handleObject() {
-
+	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	sess := &session.Session{}
+	if err != nil {
+		panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
+	}
 	for {
 		select {
 		case kb := <-theCtx.objectChan:
-			sess := getSessForAcct(kb.acctId)
-			if sess == nil {
-				fmt.Println("Can't log into AWS!")
-				theCtx.wg.Done()
-				continue
+			if kb.acctID == "0" {
+				sess = initSess
+			} else {
+				sess = getSessForAcct(kb.acctID)
+				if sess == nil {
+					fmt.Println("Can't log into AWS!")
+					theCtx.wg.Done()
+					continue
+				}
 			}
 			svc := s3.New(sess)
 			k := kb.object
 			b := kb.bucket
 			req := &s3.HeadObjectInput{Key: aws.String(k),
 				Bucket: aws.String(b)}
-			count.Incr("total")
+			count.Incr("total-object")
 			head, err := svc.HeadObject(req)
 			if err != nil {
 				if reqerr, ok := err.(awserr.RequestFailure); ok {
@@ -107,20 +121,40 @@ func handleObject() {
 						count.Incr("404 error")
 					} else if reqerr.StatusCode() == 403 {
 						count.Incr("403 error")
-
 					} else {
-						fmt.Println("Got request error on object", k, err)
+						fmt.Println("Got request error on object", k, err, reqerr, reqerr.OrigErr())
 					}
 				} else {
-					fmt.Println("Got error on object", k, err)
-				}
-			} else {
-				if (head.ServerSideEncryption == nil) || (*head.ServerSideEncryption != "AES256") {
-					fmt.Println("count.encrypted", float64(count.ReadSync("unencrypted")))
-					if rand.Float64() < (1.0 / (float64(count.ReadSync("unencrypted")))) {
-						fmt.Println("ERROR: ", b, k, head.ServerSideEncryption)
+					if netErr, ok := err.(net.Error); ok {
+						fmt.Println("Error is type", reflect.TypeOf(netErr.Temporary()))
+						fmt.Println("Got net error on object", k, netErr)
+					} else {
+						fmt.Println("Got error on object", k, err)
 					}
-					count.Incr("unencrypted")
+				}
+			} else { // head succeeded
+				if head.ContentLength != nil {
+					count.IncrDelta("object-length", *head.ContentLength)
+					if *head.ContentLength > 4*1024*1024*1024*1024 {
+						fmt.Println("Big object", *aws.String(b))
+					}
+				}
+				if theConfig["oneBucketReencrypt"].BoolVal {
+					if (head.ServerSideEncryption == nil) || (*head.ServerSideEncryption != "aws:kms") {
+						reencryptBucket(b, k, sess)
+					}
+				} else {
+					if (head.ServerSideEncryption == nil) || (*head.ServerSideEncryption != "AES256") {
+						if head.ServerSideEncryption != nil {
+							fmt.Println("Got some SSE of", *head.ServerSideEncryption,
+								*aws.String(b),
+								*aws.String(k))
+						}
+						count.Incr("unencrypted")
+						if rand.Float64() < (1.0 / (float64(count.ReadSync("unencrypted")))) {
+							fmt.Println("ERROR: ", b, k, head.ServerSideEncryption)
+						}
+					}
 				}
 			}
 			theCtx.wg.Done()
@@ -134,23 +168,33 @@ func handleObject() {
 
 // go routine to get buckets and list their objects
 func handleBucket() {
+	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	sess := &session.Session{}
+	if err != nil {
+		panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
+	}
 	for {
 		select {
 		case b := <-theCtx.bucketChan:
 			fmt.Println("Got a bucket", b.bucket)
-			sess := getSessForAcct(b.acctId)
-			if sess == nil {
-				fmt.Println("Can't log into AWS!")
-				theCtx.wg.Done()
-				continue
+			if b.acctID == "0" {
+				sess = initSess
+			} else {
+				sess = getSessForAcct(b.acctID)
+				if sess == nil {
+					fmt.Println("Can't log into AWS!")
+					theCtx.wg.Done()
+					continue
+				}
 			}
+			count.Incr("total-bucket")
 			svc := s3.New(sess)
 			req := &s3.ListObjectsV2Input{Bucket: aws.String(b.bucket)}
 			svc.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
 				for _, content := range resp.Contents {
 					key := *content.Key
 					theCtx.wg.Add(1) // Done in handleObject
-					theCtx.objectChan <- objectChanItem{b.acctId, b.bucket, key}
+					theCtx.objectChan <- objectChanItem{b.acctID, b.bucket, key}
 				}
 				return true
 			})
@@ -164,23 +208,28 @@ func handleBucket() {
 
 // go routine to get accounts and list their buckets
 func handleAccount() {
-	sess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	sess := &session.Session{}
 	if err != nil {
 		panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
 	}
 	for {
 		select {
 		case a := <-theCtx.accountChan:
-			fmt.Println("Got an account", a)
-			creds := getCredentials(*sess, a)
-			theCtx.credsRW.Lock()
-			theCtx.creds[a] = creds
-			theCtx.credsRW.Unlock()
-			sess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1"),
-				Credentials: creds})
-			if err != nil {
-				fmt.Println("Couldn't use credentials for acct", a, err)
-				continue
+			if a == "0" {
+				sess = initSess
+			} else {
+				fmt.Println("Got an account", a)
+				creds := getCredentials(*sess, a)
+				theCtx.credsRW.Lock()
+				theCtx.creds[a] = creds
+				theCtx.credsRW.Unlock()
+				sess, err = session.NewSession(&aws.Config{Region: aws.String("us-east-1"),
+					Credentials: creds})
+				if err != nil {
+					fmt.Println("Couldn't use credentials for acct", a, err)
+					continue
+				}
 			}
 			svc := s3.New(sess)
 			fmt.Println("Got an s3 thing", a, svc)
@@ -189,9 +238,12 @@ func handleAccount() {
 				fmt.Println("Can't list buckets!", err)
 			}
 			for _, b := range result.Buckets {
-				theCtx.wg.Add(1) // done in handleBucket
-				fmt.Println("Got a bucket", aws.StringValue(b.Name))
-				theCtx.bucketChan <- bucketChanItem{a, *b.Name}
+
+				if theConfig["oneBucket"].BoolVal == false || theConfig["oneBucketName"].StrVal == aws.StringValue(b.Name) {
+					theCtx.wg.Add(1) // done in handleBucket
+					fmt.Println("Got a bucket", aws.StringValue(b.Name))
+					theCtx.bucketChan <- bucketChanItem{a, *b.Name}
+				}
 			}
 			theCtx.wg.Done() // Add(1) in main
 
@@ -242,35 +294,40 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintf("Can't log into AWS! %s", err))
 	}
-	svc := organizations.New(sess)
-	// to get all the accounts
-	input := &organizations.ListAccountsInput{}
-	la, err := svc.ListAccounts(input)
-	if err != nil {
-		fmt.Println("Got an Organization error: ", err, err.Error())
-		return
-	}
-	for { // to handle paginatin - break is down in the "no next token"
-		fmt.Println("Result", la)
-
-		for _, r := range la.Accounts {
-			if *r.Status == "ACTIVE" {
-				theCtx.accountChan <- *r.Id
-				theCtx.wg.Add(1) // done in handleBucket
-			}
+	if theConfig["checkOrgAccounts"].BoolVal {
+		svc := organizations.New(sess)
+		// to get all the accounts
+		input := &organizations.ListAccountsInput{}
+		la, err := svc.ListAccounts(input)
+		if err != nil {
+			fmt.Println("Got an Organization error: ", err, err.Error())
+			return
 		}
-		fmt.Println("next token", la.NextToken)
-		if la.NextToken != nil {
-			fmt.Println("Got NextToken")
-			in := &organizations.ListAccountsInput{NextToken: la.NextToken}
-			la, err = svc.ListAccounts(in)
-			if err != nil {
-				fmt.Println("Got an Organization error: ", err, err.Error())
+		for { // to handle paginatin - break is down in the "no next token"
+			fmt.Println("Result", la)
+
+			for _, r := range la.Accounts {
+				if *r.Status == "ACTIVE" {
+					theCtx.accountChan <- *r.Id
+					theCtx.wg.Add(1) // done in handleBucket
+				}
+			}
+			fmt.Println("next token", la.NextToken)
+			if la.NextToken != nil {
+				fmt.Println("Got NextToken")
+				in := &organizations.ListAccountsInput{NextToken: la.NextToken}
+				la, err = svc.ListAccounts(in)
+				if err != nil {
+					fmt.Println("Got an Organization error: ", err, err.Error())
+					break
+				}
+			} else { // no more data
 				break
 			}
-		} else { // no more data
-			break
 		}
+	} else {
+		theCtx.accountChan <- "0"
+		theCtx.wg.Add(1) // done in handleBucket
 	}
 	theCtx.wg.Wait()
 	count.LogCounters()
