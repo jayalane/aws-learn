@@ -9,11 +9,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	count "github.com/jayalane/go-counter"
-	"os"
+	"strings"
 	"time"
 )
-
-var total int = 0
 
 func copyOnce(source string,
 	dest string,
@@ -25,24 +23,42 @@ func copyOnce(source string,
 		Key:                  aws.String(dest),
 		CopySource:           aws.String(source),
 		ServerSideEncryption: aws.String(s3.ServerSideEncryptionAwsKms),
+		SSEKMSKeyId:          aws.String(theConfig["oneBucketKMSKeyId"].StrVal),
 	}
-	output, err := svc.CopyObject(input)
-	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			switch aerr.Code() {
-			case s3.ErrCodeObjectNotInActiveTierError:
-				fmt.Println(s3.ErrCodeObjectNotInActiveTierError, aerr.Error())
-			default:
-				fmt.Println(aerr.Error())
+	n := 0.0
+	for {
+		n = n + 1.0
+		output, err := svc.CopyObject(input)
+		if err != nil {
+			if aerr, ok := err.(awserr.Error); ok {
+				switch aerr.Code() {
+				case s3.ErrCodeObjectNotInActiveTierError:
+					fmt.Println(s3.ErrCodeObjectNotInActiveTierError, aerr.Error())
+				case s3.ErrCodeNoSuchKey:
+					if n < 5 {
+						fmt.Println("Key not found, retrying", aerr.Error(), source)
+						time.Sleep(time.Duration(n*5000) * time.Millisecond)
+						continue
+					} else {
+						return nil, nil
+					}
+				default:
+					fmt.Println(aerr.Error())
+				}
+			} else {
+				fmt.Println(err.Error())
 			}
-		} else {
-			fmt.Println(err.Error())
+			if strings.Contains(err.Error(), "SlowDown") {
+				fmt.Println("Got slow down, sleeping for a few minutes")
+				time.Sleep(120 * time.Second)
+				count.Incr("slow-down")
+			}
+			fmt.Println("Got error ******** ", bucketName, source, dest)
+			count.Incr("error-copy")
+			return nil, err
 		}
-		fmt.Println("Got error ******** ", bucketName, source, dest)
-		count.Incr("error-copy")
-		return nil, err
+		return output, nil
 	}
-	return output, nil
 }
 
 // delete object
@@ -68,6 +84,11 @@ func deleteObject(objectName string,
 		}
 		fmt.Println("Got error on delete ******** ", bucketName, objectName)
 		count.Incr("error-copy")
+		if strings.Contains(err.Error(), "SlowDown") {
+			fmt.Println("Got slow down, sleeping for a few minutes")
+			count.Incr("slow-down")
+			time.Sleep(60 * time.Second)
+		}
 		return nil, err
 	}
 	return output, nil
@@ -76,16 +97,13 @@ func deleteObject(objectName string,
 // given a bucket, an object, and a session, reencrypt it
 func reencryptBucket(bucketName string,
 	objectName string,
-	sess *session.Session) {
-	fmt.Println("Reencrypt called with ", bucketName, objectName)
-	if total > 0 {
-		return
+	sess *session.Session) bool {
+	if strings.HasSuffix(objectName, "%%%") {
+		count.Incr("skip-percents")
+		return false
 	}
-	total = 1
-	// TODO
-	count.Incr("start-copy")
-	start := time.Now()
-	defer fmt.Println("Time elapsed", time.Since(start))
+
+	count.Incr("start-encrypt")
 	// first copy setup
 	_, err := copyOnce(
 		bucketName+"/"+objectName,
@@ -95,9 +113,9 @@ func reencryptBucket(bucketName string,
 	if err != nil {
 		// logging done
 		fmt.Println("Got err", err.Error(), bucketName, objectName)
-		os.Exit(3)
-		return
+		return true
 	}
+	count.Incr("one-copy")
 
 	// second copy setup
 	_, err = copyOnce(
@@ -108,9 +126,9 @@ func reencryptBucket(bucketName string,
 	if err != nil {
 		// logging done
 		fmt.Println("Got 2nd err", err.Error(), bucketName, objectName)
-		os.Exit(3)
-		return
+		return true
 	}
+	count.Incr("two-copy")
 	// then delete the tmp
 	_, err = deleteObject(
 		objectName+"%%%",
@@ -119,10 +137,10 @@ func reencryptBucket(bucketName string,
 	if err != nil {
 		// logging done
 		fmt.Println("Got delete err", err.Error(), bucketName, objectName)
-		os.Exit(3)
-		return
+		return true
 	}
 	// check for ok?
-	os.Exit(3)
+	count.Incr("encrypted-ok")
+	return false
 
 }

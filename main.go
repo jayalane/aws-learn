@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,6 +28,7 @@ var defaultConfig = `#
 oneBucket = true
 oneBucketName = bucket_name
 oneBucketReencrypt = false
+oneBucketKMSKeyId = none
 checkOrgAccounts = false
 numAccountHandlers = 1
 numBucketHandlers = 10
@@ -133,26 +135,36 @@ func handleObject() {
 					}
 				}
 			} else { // head succeeded
+				tooBig := false
 				if head.ContentLength != nil {
 					count.IncrDelta("object-length", *head.ContentLength)
-					if *head.ContentLength > 4*1024*1024*1024*1024 {
-						fmt.Println("Big object", *aws.String(b))
+					if *head.ContentLength > 5368709000 {
+						fmt.Println("Big object", *aws.String(b), *aws.String(k))
+						tooBig = true
 					}
 				}
 				if theConfig["oneBucketReencrypt"].BoolVal {
-					if (head.ServerSideEncryption == nil) || (*head.ServerSideEncryption != "aws:kms") {
-						reencryptBucket(b, k, sess)
+					if (head.ServerSideEncryption == nil) ||
+						(*head.ServerSideEncryption != "aws:kms") ||
+						(!strings.Contains(*head.SSEKMSKeyId, theConfig["oneBucketKMSKeyId"].StrVal)) {
+						if !tooBig {
+							retry := reencryptBucket(b, k, sess)
+							if retry {
+								count.Incr("retry-object")
+								theCtx.objectChan <- kb
+							}
+						}
 					}
 				} else {
-					if (head.ServerSideEncryption == nil) || (*head.ServerSideEncryption != "AES256") {
-						if head.ServerSideEncryption != nil {
-							fmt.Println("Got some SSE of", *head.ServerSideEncryption,
-								*aws.String(b),
-								*aws.String(k))
-						}
+					if (head.ServerSideEncryption == nil) || ((*head.ServerSideEncryption != "aws:kms") ||
+						!strings.Contains(*head.SSEKMSKeyId, theConfig["oneBucketKMSKeyId"].StrVal)) {
 						count.Incr("unencrypted")
 						if rand.Float64() < (1.0 / (float64(count.ReadSync("unencrypted")))) {
-							fmt.Println("ERROR: ", b, k, head.ServerSideEncryption)
+							if *head.ServerSideEncryption == "aws:kms" {
+								fmt.Println("ERROR: ", b, k, *head.ServerSideEncryption, *head.SSEKMSKeyId)
+							} else {
+								fmt.Println("ERROR: ", b, k, *head.ServerSideEncryption)
+							}
 						}
 					}
 				}
@@ -275,7 +287,7 @@ func main() {
 	theCtx.wg = new(sync.WaitGroup)
 	theCtx.accountChan = make(chan string, 100)
 	theCtx.bucketChan = make(chan bucketChanItem, 100)
-	theCtx.objectChan = make(chan objectChanItem, 100000)
+	theCtx.objectChan = make(chan objectChanItem, 1000000)
 	theCtx.creds = make(map[string]*credentials.Credentials)
 	theCtx.credsRW = sync.RWMutex{}
 
