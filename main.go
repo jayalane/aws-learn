@@ -30,7 +30,7 @@ oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
 oneBucketKMSKeyId = none
-checkOrgAccounts = false
+checkOrgAccounts = true
 listFilesMatching = dlv
 justListFiles = false
 setToDangerToDeleteMatching = no
@@ -342,7 +342,7 @@ func handleAccount() {
 				sess = initSess
 			} else {
 				fmt.Println("Got an account", a)
-				creds := getCredentials(*sess, a)
+				creds := getCredentials(*initSess, a)
 				theCtx.credsRW.Lock()
 				theCtx.creds[a] = creds
 				theCtx.credsRW.Unlock()
