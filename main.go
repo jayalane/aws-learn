@@ -30,6 +30,9 @@ oneBucketName = bucket_name
 oneBucketReencrypt = false
 oneBucketKMSKeyId = none
 checkOrgAccounts = false
+listFilesMatching = dlv
+justListFiles = false
+setToDangerToDeleteMatching = no
 numAccountHandlers = 1
 numBucketHandlers = 10
 numObjectHandlers = 1000
@@ -113,6 +116,23 @@ func handleObject() {
 			svc := s3.New(sess)
 			k := kb.object
 			b := kb.bucket
+			if theConfig["justListFiles"].BoolVal {
+				if strings.Contains(k, theConfig["listFilesMatching"].StrVal) {
+					fmt.Printf(
+						"Found match s3://%s/%s\n",
+						b,
+						k)
+					if theConfig["setToDangerToDeleteMatching"].StrVal == "danger" {
+						fmt.Println("Going to delete", k)
+						_, err = deleteObject(k, b, sess)
+						if err != nil {
+							fmt.Println("Error deleting", k, err.Error())
+						}
+					}
+				}
+				theCtx.wg.Done()
+				continue
+			}
 			req := &s3.HeadObjectInput{Key: aws.String(k),
 				Bucket: aws.String(b)}
 			count.Incr("total-object")
