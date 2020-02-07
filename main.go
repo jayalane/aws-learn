@@ -180,7 +180,9 @@ func handleObject() {
 						!strings.Contains(*head.SSEKMSKeyId, theConfig["oneBucketKMSKeyId"].StrVal)) {
 						count.Incr("unencrypted")
 						if rand.Float64() < (1.0 / (float64(count.ReadSync("unencrypted")))) {
-							if *head.ServerSideEncryption == "aws:kms" {
+							if nil == head.ServerSideEncryption {
+								fmt.Println("ERROR: no encryption", b, k)
+							} else if *head.ServerSideEncryption == "aws:kms" {
 								fmt.Println("ERROR: ", b, k, *head.ServerSideEncryption, *head.SSEKMSKeyId)
 							} else {
 								fmt.Println("ERROR: ", b, k, *head.ServerSideEncryption)
