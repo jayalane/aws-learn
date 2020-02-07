@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -32,7 +33,6 @@ oneBucketKMSKeyId = none
 checkOrgAccounts = false
 listFilesMatching = dlv
 justListFiles = false
-bucketKeyIdMapFileName = list_keys.txt
 setToDangerToDeleteMatching = no
 numAccountHandlers = 1
 numBucketHandlers = 10
@@ -62,7 +62,8 @@ type context struct {
 	credsRW     sync.RWMutex
 	creds       map[string]*credentials.Credentials
 	wg          *sync.WaitGroup
-	keyIDMap    *map[string]string
+	keyIDMap    map[string]string
+	keyRW       sync.RWMutex
 }
 
 var theCtx context
@@ -73,9 +74,9 @@ var theCtx context
 func isBucketEncOk(b string, head s3.HeadObjectOutput) bool {
 	keyID := ""
 	hasKeyID := false
-	if theCtx.keyIDMap != nil {
-		keyID, hasKeyID = (*theCtx.keyIDMap)[b]
-	}
+	theCtx.keyRW.RLock()
+	keyID, hasKeyID = theCtx.keyIDMap[b]
+	theCtx.keyRW.RUnlock()
 	if hasKeyID {
 		// must be encrypted and right key id
 		if head.ServerSideEncryption == nil {
@@ -111,6 +112,60 @@ func getSessForAcct(a string) *session.Session {
 		return sess
 	}
 	return nil
+}
+
+func getDefaultKey(b *string, svc *s3.S3) (string, error) {
+	if b == nil || svc == nil {
+		return "", errors.New("No bucket or svc")
+	}
+	Input := s3.GetBucketEncryptionInput{
+		Bucket: b,
+	}
+	out, err := svc.GetBucketEncryption(&Input)
+	if err != nil {
+		if reqerr, ok := err.(awserr.RequestFailure); ok {
+			if reqerr.StatusCode() == 404 {
+				count.Incr("404 error")
+			} else if reqerr.StatusCode() == 403 {
+				count.Incr("403 error")
+			} else {
+				fmt.Println("Got request error on object", b, err, reqerr, reqerr.OrigErr())
+			}
+		} else {
+			if netErr, ok := err.(net.Error); ok {
+				fmt.Println("Error is type", reflect.TypeOf(netErr.Temporary()))
+				fmt.Println("Got net error on bucket", b, netErr)
+			} else {
+				fmt.Println("Got error on object", b, err)
+			}
+		}
+		return "", err
+	}
+	keyID := ""
+	if out != nil {
+		// this is complex API for some reason
+		if out.ServerSideEncryptionConfiguration == nil {
+			return "", errors.New("No encryption setting")
+		}
+		for _, v := range out.ServerSideEncryptionConfiguration.Rules {
+			if v.ApplyServerSideEncryptionByDefault != nil {
+				if "AES256" == aws.StringValue(v.ApplyServerSideEncryptionByDefault.SSEAlgorithm) {
+					return "AES256", nil
+				}
+				keyID = aws.StringValue(v.ApplyServerSideEncryptionByDefault.KMSMasterKeyID)
+			}
+		}
+	}
+	return keyID, nil
+}
+
+// write id to map with sync
+func setBucketKey(b *string, id string) {
+	if b != nil && id != "" {
+		theCtx.keyRW.Lock()
+		theCtx.keyIDMap[*b] = id
+		theCtx.keyRW.Unlock()
+	}
 }
 
 // given a master session and an account ID, generate an assumed role credentials
@@ -250,6 +305,12 @@ func handleBucket() {
 			}
 			count.Incr("total-bucket")
 			svc := s3.New(sess)
+			// get default key
+			key, err := getDefaultKey(aws.String(b.bucket), svc)
+			if err != nil && key != "" {
+				setBucketKey(aws.String(b.bucket), key)
+			}
+			// start list objects
 			req := &s3.ListObjectsV2Input{Bucket: aws.String(b.bucket)}
 			svc.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
 				for _, content := range resp.Contents {
@@ -339,16 +400,8 @@ func main() {
 	theCtx.objectChan = make(chan objectChanItem, 1000000)
 	theCtx.creds = make(map[string]*credentials.Credentials)
 	theCtx.credsRW = sync.RWMutex{}
-
-	//read the bucket -> key ID map
-	theCtx.keyIDMap, err = readCsv(theConfig["bucketKeyIdMapFileName"].StrVal)
-	fmt.Println("Got map of key ids", *theCtx.keyIDMap)
-	if err != nil {
-		fmt.Println(
-			"Couldn't read file",
-			theConfig["bucketKeyIdMapFileName"].StrVal, ":",
-			err.Error())
-	}
+	theCtx.keyIDMap = make(map[string]string)
+	theCtx.keyRW = sync.RWMutex{}
 
 	// start go routines
 	go handleAccount()
