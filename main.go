@@ -25,13 +25,14 @@ import (
 
 var theConfig config.Config
 var defaultConfig = `#
-oneBucket = true
+oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
 oneBucketKMSKeyId = none
 checkOrgAccounts = false
 listFilesMatching = dlv
 justListFiles = false
+bucketKeyIdMapFileName = list_keys.txt
 setToDangerToDeleteMatching = no
 numAccountHandlers = 1
 numBucketHandlers = 10
@@ -61,11 +62,39 @@ type context struct {
 	credsRW     sync.RWMutex
 	creds       map[string]*credentials.Credentials
 	wg          *sync.WaitGroup
+	keyIDMap    *map[string]string
 }
 
 var theCtx context
 
 // first a few utilities
+
+// given a bucket and head check if the encryption is ok
+func isBucketEncOk(b string, head s3.HeadObjectOutput) bool {
+	keyID := ""
+	hasKeyID := false
+	if theCtx.keyIDMap != nil {
+		keyID, hasKeyID = (*theCtx.keyIDMap)[b]
+	}
+	if hasKeyID {
+		// must be encrypted and right key id
+		if head.ServerSideEncryption == nil {
+			return false
+		}
+		if *head.ServerSideEncryption != "aws:kms" {
+			return false
+		}
+		if !strings.Contains(*head.SSEKMSKeyId, keyID) {
+			return false
+		}
+		return true
+	}
+	// no keyID so just needs to be something
+	if head.ServerSideEncryption == nil {
+		return false
+	}
+	return true
+}
 
 // given an account, gets a session
 func getSessForAcct(a string) *session.Session {
@@ -164,9 +193,8 @@ func handleObject() {
 					}
 				}
 				if theConfig["oneBucketReencrypt"].BoolVal {
-					if (head.ServerSideEncryption == nil) ||
-						(*head.ServerSideEncryption != "aws:kms") ||
-						(!strings.Contains(*head.SSEKMSKeyId, theConfig["oneBucketKMSKeyId"].StrVal)) {
+					// we will be reencrypting
+					if !isBucketEncOk(b, *head) {
 						if !tooBig {
 							retry := reencryptBucket(b, k, sess)
 							if retry {
@@ -176,8 +204,7 @@ func handleObject() {
 						}
 					}
 				} else {
-					if (head.ServerSideEncryption == nil) || ((*head.ServerSideEncryption != "aws:kms") ||
-						!strings.Contains(*head.SSEKMSKeyId, theConfig["oneBucketKMSKeyId"].StrVal)) {
+					if !isBucketEncOk(b, *head) {
 						count.Incr("unencrypted")
 						if rand.Float64() < (1.0 / (float64(count.ReadSync("unencrypted")))) {
 							if nil == head.ServerSideEncryption {
@@ -312,6 +339,16 @@ func main() {
 	theCtx.objectChan = make(chan objectChanItem, 1000000)
 	theCtx.creds = make(map[string]*credentials.Credentials)
 	theCtx.credsRW = sync.RWMutex{}
+
+	//read the bucket -> key ID map
+	theCtx.keyIDMap, err = readCsv(theConfig["bucketKeyIdMapFileName"].StrVal)
+	fmt.Println("Got map of key ids", *theCtx.keyIDMap)
+	if err != nil {
+		fmt.Println(
+			"Couldn't read file",
+			theConfig["bucketKeyIdMapFileName"].StrVal, ":",
+			err.Error())
+	}
 
 	// start go routines
 	go handleAccount()
