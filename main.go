@@ -30,10 +30,12 @@ oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
 oneBucketKMSKeyId = none
+checkAcl = true
 checkOrgAccounts = true
 listFilesMatching = dlv
 justListFiles = false
 setToDangerToDeleteMatching = no
+setToDangerToForceACL = no
 numAccountHandlers = 1
 numBucketHandlers = 10
 numObjectHandlers = 1000
@@ -62,6 +64,8 @@ type context struct {
 	credsRW     sync.RWMutex
 	creds       map[string]*credentials.Credentials
 	wg          *sync.WaitGroup
+	canonIDMap  map[string]string
+	canonRW     sync.RWMutex
 	keyIDMap    map[string]string
 	keyRW       sync.RWMutex
 }
@@ -112,6 +116,19 @@ func getSessForAcct(a string) *session.Session {
 		return sess
 	}
 	return nil
+}
+
+// given an account, gets a session
+func lookupCanonicalIDForAcct(a string, sess *session.Session) {
+	theCtx.canonRW.RLock()
+	defer theCtx.canonRW.RUnlock()
+	if _, ok := theCtx.canonIDMap[a]; !ok {
+		cID, err := lookupCanonID(a, sess)
+		if err != nil {
+			fmt.Println("Error getting canonical ID for acct id", a, err)
+		}
+		theCtx.canonIDMap[a] = cID
+	}
 }
 
 func getDefaultKey(b *string, svc *s3.S3) (string, error) {
@@ -200,6 +217,7 @@ func handleObject() {
 			svc := s3.New(sess)
 			k := kb.object
 			b := kb.bucket
+			count.Incr("total-object")
 			if theConfig["justListFiles"].BoolVal {
 				if strings.Contains(k, theConfig["listFilesMatching"].StrVal) {
 					fmt.Printf(
@@ -217,27 +235,17 @@ func handleObject() {
 				theCtx.wg.Done()
 				continue
 			}
+			if theConfig["checkAcl"].BoolVal {
+				handleACL(b, k, kb.acctID, sess)
+				theCtx.wg.Done()
+				continue
+			}
 			req := &s3.HeadObjectInput{Key: aws.String(k),
 				Bucket: aws.String(b)}
-			count.Incr("total-object")
 			head, err := svc.HeadObject(req)
 			if err != nil {
-				if reqerr, ok := err.(awserr.RequestFailure); ok {
-					if reqerr.StatusCode() == 404 {
-						count.Incr("404 error")
-					} else if reqerr.StatusCode() == 403 {
-						count.Incr("403 error")
-					} else {
-						fmt.Println("Got request error on object", k, err, reqerr, reqerr.OrigErr())
-					}
-				} else {
-					if netErr, ok := err.(net.Error); ok {
-						fmt.Println("Error is type", reflect.TypeOf(netErr.Temporary()))
-						fmt.Println("Got net error on object", k, netErr)
-					} else {
-						fmt.Println("Got error on object", k, err)
-					}
-				}
+				logCountErr(err, "bucket/object"+k+"/"+b)
+
 			} else { // head succeeded
 				tooBig := false
 				if head.ContentLength != nil {
@@ -353,6 +361,8 @@ func handleAccount() {
 					continue
 				}
 			}
+			fmt.Println("About to call get canonical id", a)
+			lookupCanonicalIDForAcct(a, sess)
 			svc := s3.New(sess)
 			fmt.Println("Got an s3 thing", a, svc)
 			result, err := svc.ListBuckets(nil)
@@ -402,6 +412,8 @@ func main() {
 	theCtx.credsRW = sync.RWMutex{}
 	theCtx.keyIDMap = make(map[string]string)
 	theCtx.keyRW = sync.RWMutex{}
+	theCtx.canonIDMap = make(map[string]string)
+	theCtx.canonRW = sync.RWMutex{}
 
 	// start go routines
 	go handleAccount()
