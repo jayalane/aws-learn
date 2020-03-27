@@ -31,6 +31,7 @@ oneBucketName = bucket_name
 oneBucketReencrypt = false
 oneBucketKMSKeyId = none
 checkAcl = true
+aclOwnerAcct = true
 checkOrgAccounts = true
 listFilesMatching = dlv
 justListFiles = false
@@ -364,7 +365,6 @@ func handleAccount() {
 			fmt.Println("About to call get canonical id", a)
 			lookupCanonicalIDForAcct(a, sess)
 			svc := s3.New(sess)
-			fmt.Println("Got an s3 thing", a, svc)
 			result, err := svc.ListBuckets(nil)
 			if err != nil {
 				fmt.Println("Can't list buckets!", err)

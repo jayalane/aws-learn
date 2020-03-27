@@ -13,12 +13,17 @@ import (
 )
 
 // func logCountErr checks aws error and logs and registers stats
-func logCountErr(err error, msg string) {
+func logCountErr(err error, msg string) bool {
+	fmt.Println("Got error on ", msg, err)
+	is403 := false
 
 	if reqerr, ok := err.(awserr.RequestFailure); ok {
+		fmt.Println("Got err", reqerr)
 		if reqerr.StatusCode() == 404 {
 			count.Incr("404 error")
 		} else if reqerr.StatusCode() == 403 {
+			fmt.Println("Got 403 error", reqerr)
+			is403 = true
 			count.Incr("403 error")
 		} else {
 			fmt.Println("Got request error on", msg, err, reqerr, reqerr.OrigErr())
@@ -34,5 +39,6 @@ func logCountErr(err error, msg string) {
 			fmt.Println("Got error on ", msg, err)
 		}
 	}
+	return is403
 
 }
