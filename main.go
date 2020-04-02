@@ -220,7 +220,9 @@ func handleObject() {
 			b := kb.bucket
 			count.Incr("total-object")
 			if theConfig["justListFiles"].BoolVal {
-				if strings.Contains(k, theConfig["listFilesMatching"].StrVal) {
+				if theConfig["listFilesMatching"].StrVal == "*" ||
+					strings.Contains(k, theConfig["listFilesMatching"].StrVal) {
+
 					fmt.Printf(
 						"Found match s3://%s/%s\n",
 						b,
