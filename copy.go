@@ -61,7 +61,7 @@ func copyOnce(source string,
 	}
 }
 
-// delete object
+// deleteObject deletes object from the specified bucket using the provided session
 func deleteObject(objectName string,
 	bucketName string,
 	sess *session.Session) (*s3.DeleteObjectOutput, error) {
@@ -83,7 +83,7 @@ func deleteObject(objectName string,
 			fmt.Println(err.Error())
 		}
 		fmt.Println("Got error on delete ******** ", bucketName, objectName)
-		count.Incr("error-copy")
+		count.Incr("error-delete")
 		if strings.Contains(err.Error(), "SlowDown") {
 			fmt.Println("Got slow down, sleeping for a few minutes")
 			count.Incr("slow-down")
