@@ -13,6 +13,7 @@ func parseBucketList(bObj *s3.ListBucketsOutput) (string, error) {
 	if bObj == nil {
 		return "", errors.New("No bucket list")
 	}
+	fmt.Println("Returning canonical ID", *bObj.Owner.ID)
 	return *bObj.Owner.ID, nil
 }
 
