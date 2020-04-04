@@ -34,6 +34,7 @@ checkAcl = true
 aclOwnerAcct = true
 checkOrgAccounts = true
 listFilesMatching = dlv
+listFilesMatchingExclude = %%%
 justListFiles = false
 setToDangerToDeleteMatching = no
 setToDangerToForceACL = no
@@ -220,20 +221,25 @@ func handleObject() {
 			b := kb.bucket
 			count.Incr("total-object")
 			if theConfig["justListFiles"].BoolVal {
-				if theConfig["listFilesMatching"].StrVal == "*" ||
-					strings.Contains(k, theConfig["listFilesMatching"].StrVal) {
+				if ((theConfig["oneBucket"].BoolVal && theConfig["listFilesMatching"].StrVal == "*") || // if just 1 bucket and wildcard (can't delete all objects in account)
+					strings.Contains(k, theConfig["listFilesMatching"].StrVal)) && // or substring match -- but can delete all dlv files in the account
+					!strings.Contains(k, theConfig["listFilesMatchingExclude"].StrVal) { // but never if the exclude thing matches
 
 					fmt.Printf(
 						"Found match s3://%s/%s\n",
 						b,
 						k)
+					count.IncrDelta("list-found", 1)
 					if theConfig["setToDangerToDeleteMatching"].StrVal == "danger" {
 						fmt.Println("Going to delete", k)
 						_, err = deleteObject(k, b, sess)
 						if err != nil {
-							fmt.Println("Error deleting", k, err.Error())
+							fmt.Println("Error deleting", k, b, err.Error())
 						}
 					}
+				} else {
+					fmt.Println("Skipping object", k, b)
+					count.IncrDelta("list-skipping", 1)
 				}
 				theCtx.wg.Done()
 				continue
@@ -346,11 +352,13 @@ func handleAccount() {
 	if err != nil {
 		panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
 	}
+	gotOne := false
 	for {
 		select {
 		case a := <-theCtx.accountChan:
 			if a == "0" {
 				sess = initSess
+				fmt.Println("Got default account")
 			} else {
 				fmt.Println("Got an account", a)
 				creds := getCredentials(*initSess, a)
@@ -372,12 +380,15 @@ func handleAccount() {
 				fmt.Println("Can't list buckets!", err)
 			}
 			for _, b := range result.Buckets {
-
 				if theConfig["oneBucket"].BoolVal == false || theConfig["oneBucketName"].StrVal == aws.StringValue(b.Name) {
 					theCtx.wg.Add(1) // done in handleBucket
 					fmt.Println("Got a bucket", aws.StringValue(b.Name))
 					theCtx.bucketChan <- bucketChanItem{a, *b.Name}
+					gotOne = true
 				}
+			}
+			if !gotOne {
+				fmt.Println("Processing for buckets done with no buckets seen for", a)
 			}
 			theCtx.wg.Done() // Add(1) in main
 
@@ -464,6 +475,7 @@ func main() {
 			}
 		}
 	} else {
+		fmt.Println("Just doing one account")
 		theCtx.accountChan <- "0"
 		theCtx.wg.Add(1) // done in handleBucket
 	}
