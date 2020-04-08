@@ -17,8 +17,11 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +44,7 @@ setToDangerToForceACL = no
 numAccountHandlers = 1
 numBucketHandlers = 10
 numObjectHandlers = 1000
+profListen = localhost:6060
 # comments
 `
 
@@ -59,6 +63,7 @@ type bucketChanItem struct {
 
 // global state
 type context struct {
+	filter      *[]string
 	bucketChan  chan bucketChanItem
 	objectChan  chan objectChanItem
 	accountChan chan string
@@ -108,6 +113,7 @@ func getSessForAcct(a string) *session.Session {
 	theCtx.credsRW.RLock()
 	defer theCtx.credsRW.RUnlock()
 	if val, ok := theCtx.creds[a]; ok {
+		count.Incr("aws-newsession")
 		sess, err := session.NewSession(&aws.Config{
 			Region:      aws.String("us-east-1"),
 			Credentials: val})
@@ -140,6 +146,7 @@ func getDefaultKey(b *string, svc *s3.S3) (string, error) {
 	Input := s3.GetBucketEncryptionInput{
 		Bucket: b,
 	}
+	count.Incr("aws-get-bucket-enc")
 	out, err := svc.GetBucketEncryption(&Input)
 	if err != nil {
 		if reqerr, ok := err.(awserr.RequestFailure); ok {
@@ -190,6 +197,7 @@ func setBucketKey(b *string, id string) {
 // given a master session and an account ID, generate an assumed role credentials
 func getCredentials(session session.Session, acctID string) *credentials.Credentials {
 	a := "arn:aws:iam::" + acctID + ":role/OrganizationAccountAccessRole"
+	count.Incr("aws-sts-new-creds")
 	creds := stscreds.NewCredentials(&session, a)
 	return creds
 }
@@ -198,6 +206,7 @@ func getCredentials(session session.Session, acctID string) *credentials.Credent
 
 // go routine to get objects and see if they are encrypted
 func handleObject() {
+	count.Incr("aws-new-session-init")
 	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
 	sess := &session.Session{}
 	if err != nil {
@@ -206,6 +215,8 @@ func handleObject() {
 	for {
 		select {
 		case kb := <-theCtx.objectChan:
+			count.Incr("object-chan-remove")
+
 			if kb.acctID == "0" {
 				sess = initSess
 			} else {
@@ -221,10 +232,7 @@ func handleObject() {
 			b := kb.bucket
 			count.Incr("total-object")
 			if theConfig["justListFiles"].BoolVal {
-				if ((theConfig["oneBucket"].BoolVal && theConfig["listFilesMatching"].StrVal == "*") || // if just 1 bucket and wildcard (can't delete all objects in account)
-					strings.Contains(k, theConfig["listFilesMatching"].StrVal)) && // or substring match -- but can delete all dlv files in the account
-					!strings.Contains(k, theConfig["listFilesMatchingExclude"].StrVal) { // but never if the exclude thing matches
-
+				if filterObjectPasses(b, k, theCtx.filter) {
 					fmt.Printf(
 						"Found match s3://%s/%s\n",
 						b,
@@ -236,6 +244,7 @@ func handleObject() {
 						if err != nil {
 							fmt.Println("Error deleting", k, b, err.Error())
 						}
+						count.IncrDelta("list-deleted", 1)
 					}
 				} else {
 					fmt.Println("Skipping object", k, b)
@@ -251,6 +260,7 @@ func handleObject() {
 			}
 			req := &s3.HeadObjectInput{Key: aws.String(k),
 				Bucket: aws.String(b)}
+			count.Incr("aws-head-object")
 			head, err := svc.HeadObject(req)
 			if err != nil {
 				logCountErr(err, "bucket/object"+k+"/"+b)
@@ -301,6 +311,7 @@ func handleObject() {
 
 // go routine to get buckets and list their objects
 func handleBucket() {
+	count.Incr("aws-new-session-bare-2")
 	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
 	sess := &session.Session{}
 	if err != nil {
@@ -329,10 +340,13 @@ func handleBucket() {
 			}
 			// start list objects
 			req := &s3.ListObjectsV2Input{Bucket: aws.String(b.bucket)}
+			count.Incr("aws-list-objects-v2")
 			svc.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
 				for _, content := range resp.Contents {
 					key := *content.Key
 					theCtx.wg.Add(1) // Done in handleObject
+					count.Incr("object-chan-add")
+					runtime.Gosched()
 					theCtx.objectChan <- objectChanItem{b.acctID, b.bucket, key}
 				}
 				return true
@@ -347,6 +361,7 @@ func handleBucket() {
 
 // go routine to get accounts and list their buckets
 func handleAccount() {
+	count.Incr("aws-new-session-bare-2")
 	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
 	sess := &session.Session{}
 	if err != nil {
@@ -365,6 +380,7 @@ func handleAccount() {
 				theCtx.credsRW.Lock()
 				theCtx.creds[a] = creds
 				theCtx.credsRW.Unlock()
+				count.Incr("aws-new-session-creds-2")
 				sess, err = session.NewSession(&aws.Config{Region: aws.String("us-east-1"),
 					Credentials: creds})
 				if err != nil {
@@ -375,6 +391,7 @@ func handleAccount() {
 			fmt.Println("About to call get canonical id", a)
 			lookupCanonicalIDForAcct(a, sess)
 			svc := s3.New(sess)
+			count.Incr("aws-list-buckets")
 			result, err := svc.ListBuckets(nil)
 			if err != nil {
 				fmt.Println("Can't list buckets!", err)
@@ -407,9 +424,21 @@ func main() {
 		log.Println(defaultConfig)
 		return
 	}
+	// still config
 	var err error
 	theConfig, err = config.ReadConfig("config.txt", defaultConfig)
 	log.Println("Config", theConfig)
+	if err != nil {
+		log.Println("Error opening config.txt", err.Error())
+		if theConfig == nil {
+			os.Exit(11)
+		}
+	}
+	// filters for delete only these things under these things
+	theCtx.filter, err = readFilter("filter.txt")
+	if theCtx.filter != nil {
+		log.Println("Filter", theCtx.filter)
+	}
 	if err != nil {
 		log.Println("Error opening config.txt", err.Error())
 		if theConfig == nil {
@@ -447,6 +476,7 @@ func main() {
 		svc := organizations.New(sess)
 		// to get all the accounts
 		input := &organizations.ListAccountsInput{}
+		count.Incr("aws-list-accounts-org")
 		la, err := svc.ListAccounts(input)
 		if err != nil {
 			fmt.Println("Got an Organization error: ", err, err.Error())
@@ -479,6 +509,11 @@ func main() {
 		theCtx.accountChan <- "0"
 		theCtx.wg.Add(1) // done in handleBucket
 	}
+	go func() {
+		if len(theConfig["profListen"].StrVal) > 0 {
+			log.Println(http.ListenAndServe(theConfig["profListen"].StrVal, nil))
+		}
+	}()
 	theCtx.wg.Wait()
 	count.LogCounters()
 	//	<-theCtx.done

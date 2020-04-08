@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	count "github.com/jayalane/go-counter"
 	"os"
 )
 
@@ -97,6 +98,7 @@ func handleACL(bucket string,
 			sess = tryAlernativeSession()
 		}
 		svc = s3.New(sess)
+		count.Incr("aws-get-object-acl")
 		getACL, err = svc.GetObjectAcl(&s3.GetObjectAclInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(obj),
@@ -128,6 +130,7 @@ func handleACL(bucket string,
 			logCountErr(err, "Get new ACL failed"+bucket+"/"+obj)
 			return
 		}
+		count.Incr("aws-put-object-acl")
 		_, err = svc.PutObjectAcl(&s3.PutObjectAclInput{
 			AccessControlPolicy: &newACL,
 			Bucket:              aws.String(bucket),

@@ -28,6 +28,7 @@ func copyOnce(source string,
 	n := 0.0
 	for {
 		n = n + 1.0
+		count.Incr("aws-copy")
 		output, err := svc.CopyObject(input)
 		if err != nil {
 			if aerr, ok := err.(awserr.Error); ok {
@@ -70,6 +71,7 @@ func deleteObject(objectName string,
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(objectName),
 	}
+	count.Incr("aws-delete")
 	output, err := svc.DeleteObject(input)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
@@ -98,6 +100,7 @@ func deleteObject(objectName string,
 func reencryptBucket(bucketName string,
 	objectName string,
 	sess *session.Session) bool {
+
 	if strings.HasSuffix(objectName, "%%%") {
 		count.Incr("skip-percents")
 		return false
@@ -123,6 +126,7 @@ func reencryptBucket(bucketName string,
 		objectName,
 		bucketName,
 		sess)
+
 	if err != nil {
 		// logging done
 		fmt.Println("Got 2nd err", err.Error(), bucketName, objectName)
