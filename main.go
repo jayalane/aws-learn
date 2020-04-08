@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -63,6 +64,7 @@ type bucketChanItem struct {
 
 // global state
 type context struct {
+	lastObj     uint64
 	filter      *[]string
 	bucketChan  chan bucketChanItem
 	objectChan  chan objectChanItem
@@ -309,6 +311,10 @@ func handleObject() {
 	}
 }
 
+func makeTimestamp() uint64 { // from stackoverflow
+	return uint64(time.Now().UnixNano()) / uint64(time.Millisecond)
+}
+
 // go routine to get buckets and list their objects
 func handleBucket() {
 	count.Incr("aws-new-session-bare-2")
@@ -320,6 +326,7 @@ func handleBucket() {
 	for {
 		select {
 		case b := <-theCtx.bucketChan:
+			atomic.StoreUint64(&theCtx.lastObj, makeTimestamp())
 			fmt.Println("Got a bucket", b.bucket)
 			if b.acctID == "0" {
 				sess = initSess
@@ -446,6 +453,7 @@ func main() {
 		}
 	}
 	// init the globals
+	atomic.StoreUint64(&theCtx.lastObj, makeTimestamp())
 	theCtx.wg = new(sync.WaitGroup)
 	theCtx.accountChan = make(chan string, 100)
 	theCtx.bucketChan = make(chan bucketChanItem, 100)
@@ -514,7 +522,10 @@ func main() {
 			log.Println(http.ListenAndServe(theConfig["profListen"].StrVal, nil))
 		}
 	}()
-	theCtx.wg.Wait()
+	for makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj) < 10*1000 {
+		time.Sleep(10 * time.Second)
+		theCtx.wg.Wait()
+	}
 	count.LogCounters()
-	//	<-theCtx.done
+	fmt.Println("Exiting")
 }
