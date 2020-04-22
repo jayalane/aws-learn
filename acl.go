@@ -20,7 +20,7 @@ func getCanonID(acct string) (string, bool) {
 
 }
 
-func tryAlernativeSession() *session.Session {
+func tryAlternativeSession() *session.Session {
 	sess := getSessForAcct(theConfig["aclOwnerAcct"].StrVal)
 	return sess
 }
@@ -88,14 +88,16 @@ func handleACL(bucket string,
 	obj string,
 	acct string,
 	sess *session.Session) {
-
 	tryAgain := false
 	var err error
 	getACL := &s3.GetObjectAclOutput{}
 	var svc *s3.S3
 	for {
 		if tryAgain {
-			sess = tryAlernativeSession()
+			sess = tryAlternativeSession()
+			if sess == nil {
+				panic("Doing acl checks but not powerful enough - use root account creds")
+			}
 		}
 		svc = s3.New(sess)
 		count.Incr("aws-get-object-acl")
@@ -107,6 +109,7 @@ func handleACL(bucket string,
 		if err != nil {
 			is403 := logCountErr(err, "GetObjectAcl failed"+bucket+"/"+obj)
 			if tryAgain {
+				fmt.Println("Try again failed - check aclOwnerAcct config.txt setting", bucket, obj, err)
 				return
 			}
 			if is403 {
@@ -121,6 +124,7 @@ func handleACL(bucket string,
 	doIt := checkACL(*getACL, bucket, obj, acct)
 	if doIt {
 		fmt.Println("ERROR: Got result", doIt, acct, bucket, obj, *getACL)
+		count.Incr("bad-acl-found")
 	}
 	if doIt && theConfig["setToDangerToForceACL"].StrVal == "danger" {
 		// todo retry -- but actually we have already retried
