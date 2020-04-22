@@ -34,11 +34,13 @@ oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
 oneBucketKMSKeyId = none
-checkAcl = true
+checkAcl = false
 aclOwnerAcct = true
 checkOrgAccounts = true
-listFilesMatching = dlv
+listFilesMatchingSuffix = %%%/
+listFilesMatchingPrefix = %%%
 listFilesMatchingExclude = %%%
+useDeleteAnywayFile = 
 justListFiles = false
 setToDangerToDeleteMatching = no
 setToDangerToForceACL = no
@@ -54,6 +56,7 @@ type objectChanItem struct {
 	acctID string
 	bucket string
 	object string
+	wg     *sync.WaitGroup
 }
 
 // info about a bucket to check
@@ -112,6 +115,14 @@ func isBucketEncOk(b string, head s3.HeadObjectOutput) bool {
 
 // given an account, gets a session
 func getSessForAcct(a string) *session.Session {
+	if a == "0" {
+		initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+		if err != nil {
+			panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
+		}
+		return initSess
+	}
+
 	theCtx.credsRW.RLock()
 	defer theCtx.credsRW.RUnlock()
 	if val, ok := theCtx.creds[a]; ok {
@@ -120,7 +131,7 @@ func getSessForAcct(a string) *session.Session {
 			Region:      aws.String("us-east-1"),
 			Credentials: val})
 		if err != nil {
-			fmt.Println("Error getting session for acct id", a, err)
+			log.Println("Error getting session for acct id", a, err)
 			return nil
 		}
 		return sess
@@ -130,12 +141,12 @@ func getSessForAcct(a string) *session.Session {
 
 // given an account, gets a session
 func lookupCanonicalIDForAcct(a string, sess *session.Session) {
-	theCtx.canonRW.RLock()
-	defer theCtx.canonRW.RUnlock()
+	theCtx.canonRW.Lock()
+	defer theCtx.canonRW.Unlock()
 	if _, ok := theCtx.canonIDMap[a]; !ok {
 		cID, err := lookupCanonID(a, sess)
 		if err != nil {
-			fmt.Println("Error getting canonical ID for acct id", a, err)
+			log.Println("Error getting canonical ID for acct id", a, err)
 		}
 		theCtx.canonIDMap[a] = cID
 	}
@@ -157,14 +168,14 @@ func getDefaultKey(b *string, svc *s3.S3) (string, error) {
 			} else if reqerr.StatusCode() == 403 {
 				count.Incr("403 error")
 			} else {
-				fmt.Println("Got request error on object", b, err, reqerr, reqerr.OrigErr())
+				log.Println("Got request error on object", b, err, reqerr, reqerr.OrigErr())
 			}
 		} else {
 			if netErr, ok := err.(net.Error); ok {
-				fmt.Println("Error is type", reflect.TypeOf(netErr.Temporary()))
-				fmt.Println("Got net error on bucket", b, netErr)
+				log.Println("Error is type", reflect.TypeOf(netErr.Temporary()))
+				log.Println("Got net error on bucket", b, netErr)
 			} else {
-				fmt.Println("Got error on object", b, err)
+				log.Println("Got error on object", b, err)
 			}
 		}
 		return "", err
@@ -224,7 +235,8 @@ func handleObject() {
 			} else {
 				sess = getSessForAcct(kb.acctID)
 				if sess == nil {
-					fmt.Println("Can't log into AWS!")
+					log.Println("Can't log into AWS!")
+					kb.wg.Done()
 					theCtx.wg.Done()
 					continue
 				}
@@ -252,11 +264,14 @@ func handleObject() {
 					fmt.Println("Skipping object", k, b)
 					count.IncrDelta("list-skipping", 1)
 				}
+				kb.wg.Done()
 				theCtx.wg.Done()
 				continue
 			}
 			if theConfig["checkAcl"].BoolVal {
+				count.Incr("handle-acl")
 				handleACL(b, k, kb.acctID, sess)
+				kb.wg.Done()
 				theCtx.wg.Done()
 				continue
 			}
@@ -266,7 +281,6 @@ func handleObject() {
 			head, err := svc.HeadObject(req)
 			if err != nil {
 				logCountErr(err, "bucket/object"+k+"/"+b)
-
 			} else { // head succeeded
 				tooBig := false
 				if head.ContentLength != nil {
@@ -302,10 +316,11 @@ func handleObject() {
 					}
 				}
 			}
+			kb.wg.Done()
 			theCtx.wg.Done()
 
 		case <-time.After(60 * time.Second):
-			fmt.Println("Giving up on objects after 1 minute with no traffic")
+			log.Println("Giving up on objects after 1 minute with no traffic")
 			return
 		}
 	}
@@ -327,13 +342,13 @@ func handleBucket() {
 		select {
 		case b := <-theCtx.bucketChan:
 			atomic.StoreUint64(&theCtx.lastObj, makeTimestamp())
-			fmt.Println("Got a bucket", b.bucket)
+			log.Println("Got a bucket", b.bucket)
 			if b.acctID == "0" {
 				sess = initSess
 			} else {
 				sess = getSessForAcct(b.acctID)
 				if sess == nil {
-					fmt.Println("Can't log into AWS!")
+					log.Println("Can't log into AWS!")
 					theCtx.wg.Done()
 					continue
 				}
@@ -348,19 +363,22 @@ func handleBucket() {
 			// start list objects
 			req := &s3.ListObjectsV2Input{Bucket: aws.String(b.bucket)}
 			count.Incr("aws-list-objects-v2")
+			wg := new(sync.WaitGroup) // different WG to make bucket wait for objects
 			svc.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
+				log.Printf("Got a new page of objects")
 				for _, content := range resp.Contents {
 					key := *content.Key
+					wg.Add(1)        // Done in handleObject
 					theCtx.wg.Add(1) // Done in handleObject
 					count.Incr("object-chan-add")
 					runtime.Gosched()
-					theCtx.objectChan <- objectChanItem{b.acctID, b.bucket, key}
+					theCtx.objectChan <- objectChanItem{b.acctID, b.bucket, key, wg}
 				}
 				return true
 			})
 			theCtx.wg.Done()
 		case <-time.After(60 * time.Second):
-			fmt.Println("Giving up on buckets after 1 minute with no traffic")
+			log.Println("Giving up on buckets after 1 minute with no traffic")
 			return
 		}
 	}
@@ -380,9 +398,9 @@ func handleAccount() {
 		case a := <-theCtx.accountChan:
 			if a == "0" {
 				sess = initSess
-				fmt.Println("Got default account")
+				log.Println("Got default account")
 			} else {
-				fmt.Println("Got an account", a)
+				log.Println("Got an account", a)
 				creds := getCredentials(*initSess, a)
 				theCtx.credsRW.Lock()
 				theCtx.creds[a] = creds
@@ -391,33 +409,33 @@ func handleAccount() {
 				sess, err = session.NewSession(&aws.Config{Region: aws.String("us-east-1"),
 					Credentials: creds})
 				if err != nil {
-					fmt.Println("Couldn't use credentials for acct", a, err)
+					log.Println("Couldn't use credentials for acct", a, err)
 					continue
 				}
 			}
-			fmt.Println("About to call get canonical id", a)
+			log.Println("About to call get canonical id", a)
 			lookupCanonicalIDForAcct(a, sess)
 			svc := s3.New(sess)
 			count.Incr("aws-list-buckets")
 			result, err := svc.ListBuckets(nil)
 			if err != nil {
-				fmt.Println("Can't list buckets!", err)
+				log.Println("Can't list buckets!", err)
 			}
 			for _, b := range result.Buckets {
 				if theConfig["oneBucket"].BoolVal == false || theConfig["oneBucketName"].StrVal == aws.StringValue(b.Name) {
 					theCtx.wg.Add(1) // done in handleBucket
-					fmt.Println("Got a bucket", aws.StringValue(b.Name))
+					log.Println("Got a bucket", aws.StringValue(b.Name))
 					theCtx.bucketChan <- bucketChanItem{a, *b.Name}
 					gotOne = true
 				}
 			}
 			if !gotOne {
-				fmt.Println("Processing for buckets done with no buckets seen for", a)
+				log.Println("Processing for buckets done with no buckets seen for", a)
 			}
 			theCtx.wg.Done() // Add(1) in main
 
 		case <-time.After(60 * time.Second):
-			fmt.Println("Giving up on buckets after 1 minute with no traffic")
+			log.Println("Giving up on buckets after 1 minute with no traffic")
 			return
 		}
 	}
@@ -442,7 +460,9 @@ func main() {
 		}
 	}
 	// filters for delete only these things under these things
-	theCtx.filter, err = readFilter("filter.txt")
+	if len(theConfig["useDeleteAnywayFile"].StrVal) > 0 {
+		theCtx.filter, err = readWillDeleteFile(theConfig["useDeleteAnywayFile"].StrVal)
+	}
 	if theCtx.filter != nil {
 		log.Println("Filter", theCtx.filter)
 	}
@@ -487,25 +507,21 @@ func main() {
 		count.Incr("aws-list-accounts-org")
 		la, err := svc.ListAccounts(input)
 		if err != nil {
-			fmt.Println("Got an Organization error: ", err, err.Error())
+			log.Println("Got an Organization error: ", err, err.Error())
 			return
 		}
 		for { // to handle paginatin - break is down in the "no next token"
-			fmt.Println("Result", la)
-
 			for _, r := range la.Accounts {
 				if *r.Status == "ACTIVE" {
 					theCtx.accountChan <- *r.Id
 					theCtx.wg.Add(1) // done in handleBucket
 				}
 			}
-			fmt.Println("next token", la.NextToken)
 			if la.NextToken != nil {
-				fmt.Println("Got NextToken")
 				in := &organizations.ListAccountsInput{NextToken: la.NextToken}
 				la, err = svc.ListAccounts(in)
 				if err != nil {
-					fmt.Println("Got an Organization error: ", err, err.Error())
+					log.Println("Got an Organization error: ", err, err.Error())
 					break
 				}
 			} else { // no more data
@@ -513,19 +529,26 @@ func main() {
 			}
 		}
 	} else {
-		fmt.Println("Just doing one account")
+		log.Println("Just doing one account")
 		theCtx.accountChan <- "0"
 		theCtx.wg.Add(1) // done in handleBucket
 	}
+	// start the profiler
 	go func() {
 		if len(theConfig["profListen"].StrVal) > 0 {
 			log.Println(http.ListenAndServe(theConfig["profListen"].StrVal, nil))
 		}
 	}()
+
+	// waiting till done -
+	//     this needs to wait a bit because the WG can empty when an object list page is fully processed
+	//     and the work per object is very small
 	for makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj) < 10*1000 {
-		time.Sleep(10 * time.Second)
+		log.Println("Last activity sleeping 10 seconds", makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj))
+		time.Sleep(30 * time.Second)
+		log.Println("Now waiting")
 		theCtx.wg.Wait()
 	}
 	count.LogCounters()
-	fmt.Println("Exiting")
+	log.Println("Exiting", makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj))
 }
