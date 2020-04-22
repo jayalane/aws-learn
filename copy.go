@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	count "github.com/jayalane/go-counter"
+	"log"
 	"strings"
 	"time"
 )
@@ -50,6 +51,7 @@ func copyOnce(source string,
 				fmt.Println(err.Error())
 			}
 			if strings.Contains(err.Error(), "SlowDown") {
+				log.Println("Got slow down, sleeping for a few minutes")
 				fmt.Println("Got slow down, sleeping for a few minutes")
 				time.Sleep(120 * time.Second)
 				count.Incr("slow-down")

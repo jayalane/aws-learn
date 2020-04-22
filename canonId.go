@@ -4,17 +4,17 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	count "github.com/jayalane/go-counter"
+	"log"
 )
 
 func parseBucketList(bObj *s3.ListBucketsOutput) (string, error) {
 	if bObj == nil {
 		return "", errors.New("No bucket list")
 	}
-	fmt.Println("Returning canonical ID", *bObj.Owner.ID)
+	log.Println("Returning canonical ID", *bObj.Owner.ID)
 	return *bObj.Owner.ID, nil
 }
 
@@ -22,7 +22,7 @@ func parseBucketList(bObj *s3.ListBucketsOutput) (string, error) {
 // account canonical ID from the s3 list-bukcets
 func lookupCanonID(acct string,
 	sess *session.Session) (string, error) {
-	fmt.Println("Looking up canonical id for ", acct)
+	log.Println("Looking up canonical id for ", acct)
 	svc := s3.New(sess)
 	count.Incr("aws-listbuckets-canon")
 	bObj, err := svc.ListBuckets(&s3.ListBucketsInput{})
