@@ -6,16 +6,17 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"strings"
 )
 
-func readFilter(filename string) (*[]string, error) {
+func readWillDeleteFile(filename string) (*[]string, error) {
 
 	var filter []string = make([]string, 0, 64)
 	if len(filename) == 0 {
-		fmt.Println("No config file specified, using empty", filename)
+		fmt.Println("No will delete file specified, using empty", filename)
 		return &filter, nil
 	}
 	binaryFilename, err := os.Executable()
@@ -25,18 +26,18 @@ func readFilter(filename string) (*[]string, error) {
 	filePath := path.Join(path.Dir(binaryFilename), filename)
 	file, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println("Warning: can't open filter file, using empty,",
+		fmt.Println("Warning: can't open will delete file, using empty,",
 			filename, filePath, err.Error())
 		return &filter, err
 	}
-	fmt.Println("Using filter file", filePath)
+	fmt.Println("Using will delete file", filePath)
 	defer file.Close()
 	fileReader := bufio.NewReader(file)
-	err = addFilterFromReader(fileReader, &filter)
+	err = addWillDeleteListFromReader(fileReader, &filter)
 	return &filter, nil
 }
 
-func addFilterFromReader(reader io.Reader, filter *[]string) error {
+func addWillDeleteListFromReader(reader io.Reader, filter *[]string) error {
 
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
@@ -45,21 +46,24 @@ func addFilterFromReader(reader io.Reader, filter *[]string) error {
 			if err == io.EOF {
 				break
 			}
-			fmt.Println("Error reading filter", err)
+			fmt.Println("Error reading will delete list", err)
 			return err
 		}
 		if len(line) > 0 && line[:1] == "#" { // TODO  space space #
 			continue
 		}
 		value := strings.TrimSpace(line)
-		fmt.Println("Adding filter", line)
-		*filter = append(*filter, value)
+		if len(value) > 0 { // don't allow '' or it will match everything
+			fmt.Println("Adding will delete entry", value)
+			*filter = append(*filter, value)
+		}
 	}
 	return nil
 }
 
 // filterObjectPasses returns true if the object can be removed
 func filterObjectPasses(b string, k string, filter *[]string) bool {
+
 	if !theConfig["oneBucket"].BoolVal {
 		return false // never delete when we are scanning all the buckets
 	}
@@ -68,22 +72,21 @@ func filterObjectPasses(b string, k string, filter *[]string) bool {
 	if theConfig["listFilesMatchingPrefix"].StrVal == "*" &&
 		len(theConfig["ListFilesMatchingExclude"].StrVal) > 0 &&
 		!strings.Contains(k, theConfig["ListFilesMatchingExclude"].StrVal) {
-
 		return true // only that special case of matching
 	}
+
 	// now tickier cases
 	// 1.  In matching files but not in exclude list
 	if strings.HasPrefix(k, theConfig["listFilesMatchingPrefix"].StrVal) &&
 		len(theConfig["ListFilesMatchingExclude"].StrVal) > 0 &&
-		!strings.Contains(k, theConfig["listFilesMatchingExclude"].StrVal) { // but never if the exclude thing ma}
+		!strings.Contains(k, theConfig["listFilesMatchingExclude"].StrVal) { // but never if the exclude thing matches
 
 		return true
 	}
 	if filter != nil {
 		for _, s := range *filter {
-			if strings.Contains(k, s) {
-				fmt.Println("Filter matches", s, k)
-				return true // so delete all the filter paths
+			if strings.HasPrefix(k, s) {
+				return true // so delete all the things in the delete file
 			}
 		}
 	}
