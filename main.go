@@ -22,7 +22,6 @@ import (
 	"os"
 	"reflect"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,6 +41,7 @@ listFilesMatchingPrefix = %%%
 listFilesMatchingExclude = %%%
 useDeleteAnywayFile = 
 justListFiles = false
+setToDangerToReencrypt = no
 setToDangerToDeleteMatching = no
 setToDangerToForceACL = no
 numAccountHandlers = 1
@@ -85,33 +85,6 @@ type context struct {
 var theCtx context
 
 // first a few utilities
-
-// given a bucket and head check if the encryption is ok
-func isBucketEncOk(b string, head s3.HeadObjectOutput) bool {
-	keyID := ""
-	hasKeyID := false
-	theCtx.keyRW.RLock()
-	keyID, hasKeyID = theCtx.keyIDMap[b]
-	theCtx.keyRW.RUnlock()
-	if hasKeyID {
-		// must be encrypted and right key id
-		if head.ServerSideEncryption == nil {
-			return false
-		}
-		if *head.ServerSideEncryption != "aws:kms" {
-			return false
-		}
-		if !strings.Contains(*head.SSEKMSKeyId, keyID) {
-			return false
-		}
-		return true
-	}
-	// no keyID so just needs to be something
-	if head.ServerSideEncryption == nil {
-		return false
-	}
-	return true
-}
 
 // given an account, gets a session
 func getSessForAcct(a string) *session.Session {
@@ -247,13 +220,13 @@ func handleObject() {
 			count.Incr("total-object")
 			if theConfig["justListFiles"].BoolVal {
 				if filterObjectPasses(b, k, theCtx.filter) {
-					fmt.Printf(
-						"Found match s3://%s/%s\n",
-						b,
-						k)
+					//fmt.Printf(
+					//	"Found match s3://%s/%s\n",
+					//	b,
+					//	k)
 					count.IncrDelta("list-found", 1)
 					if theConfig["setToDangerToDeleteMatching"].StrVal == "danger" {
-						fmt.Println("Going to delete", k)
+						// fmt.Println("Going to delete", k)
 						_, err = deleteObject(k, b, sess)
 						if err != nil {
 							fmt.Println("Error deleting", k, b, err.Error())
@@ -261,7 +234,7 @@ func handleObject() {
 						count.IncrDelta("list-deleted", 1)
 					}
 				} else {
-					fmt.Println("Skipping object", k, b)
+					// fmt.Println("Skipping object", k, b)
 					count.IncrDelta("list-skipping", 1)
 				}
 				kb.wg.Done()
@@ -292,17 +265,23 @@ func handleObject() {
 				}
 				if theConfig["oneBucketReencrypt"].BoolVal {
 					// we will be reencrypting
-					if !isBucketEncOk(b, *head) {
+					if !isObjectEncOk(b, *head) {
+						count.Incr("encrypt-bad")
+						if !(theConfig["setToDangerToReencrypt"].StrVal == "danger") {
+							continue
+						}
 						if !tooBig {
-							retry := reencryptBucket(b, k, sess)
+							retry := reencryptObject(b, k, sess)
 							if retry {
 								count.Incr("retry-object")
 								theCtx.objectChan <- kb
 							}
 						}
+					} else {
+						count.Incr("encrypt-good")
 					}
 				} else {
-					if !isBucketEncOk(b, *head) {
+					if !isObjectEncOk(b, *head) {
 						count.Incr("unencrypted")
 						if rand.Float64() < (1.0 / (float64(count.ReadSync("unencrypted")))) {
 							if nil == head.ServerSideEncryption {
