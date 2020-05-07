@@ -62,11 +62,13 @@ func checkACL(acl s3.GetObjectAclOutput,
 	bucket string,
 	obj string,
 	acct string) bool {
+	// fmt.Println("Checking ACL for", bucket, obj, acct)
 	canonID, ok := getCanonID(acct)
 	if !ok {
 		return true // fail open
 	}
 	if (acl.Owner.ID != nil) && (*acl.Owner.ID == canonID) {
+		fmt.Println("bad owner for", bucket, obj, acct)
 		return false
 	}
 	found := false
