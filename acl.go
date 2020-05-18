@@ -109,7 +109,7 @@ func handleACL(bucket string,
 		})
 
 		if err != nil {
-			is403 := logCountErr(err, "GetObjectAcl failed"+bucket+"/"+obj)
+			is403 := logCountErrTag(err, "GetObjectAcl failed"+bucket+"/"+obj, bucket)
 			if tryAgain {
 				fmt.Println("Try again failed - check aclOwnerAcct config.txt setting", bucket, obj, err)
 				return

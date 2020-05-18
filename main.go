@@ -138,8 +138,10 @@ func getDefaultKey(b *string, svc *s3.S3) (string, error) {
 		if reqerr, ok := err.(awserr.RequestFailure); ok {
 			if reqerr.StatusCode() == 404 {
 				count.Incr("404 error")
+				count.Incr("404 error" + *b)
 			} else if reqerr.StatusCode() == 403 {
 				count.Incr("403 error")
+				count.Incr("403 error" + *b)
 			} else {
 				log.Println("Got request error on object", b, err, reqerr, reqerr.OrigErr())
 			}
@@ -218,6 +220,7 @@ func handleObject() {
 			k := kb.object
 			b := kb.bucket
 			count.Incr("total-object")
+			count.Incr("total-object-" + b)
 			if theConfig["justListFiles"].BoolVal {
 				if filterObjectPasses(b, k, theCtx.filter) {
 					//fmt.Printf(
@@ -225,6 +228,7 @@ func handleObject() {
 					//	b,
 					//	k)
 					count.IncrDelta("list-found", 1)
+					count.IncrDelta("list-found-"+b, 1)
 					if theConfig["setToDangerToDeleteMatching"].StrVal == "danger" {
 						// fmt.Println("Going to delete", k)
 						_, err = deleteObject(k, b, sess)
@@ -232,10 +236,12 @@ func handleObject() {
 							fmt.Println("Error deleting", k, b, err.Error())
 						}
 						count.IncrDelta("list-deleted", 1)
+						count.IncrDelta("list-deleted-"+b, 1)
 					}
 				} else {
 					// fmt.Println("Skipping object", k, b)
 					count.IncrDelta("list-skipping", 1)
+					count.IncrDelta("list-skipping-"+b, 1)
 				}
 				kb.wg.Done()
 				theCtx.wg.Done()
@@ -243,6 +249,7 @@ func handleObject() {
 			}
 			if theConfig["checkAcl"].BoolVal {
 				count.Incr("handle-acl")
+				count.Incr("handle-acl-" + b)
 				handleACL(b, k, kb.acctID, sess)
 				kb.wg.Done()
 				theCtx.wg.Done()
@@ -253,13 +260,16 @@ func handleObject() {
 			count.Incr("aws-head-object")
 			head, err := svc.HeadObject(req)
 			if err != nil {
-				logCountErr(err, "bucket/object"+k+"/"+b)
+				logCountErrTag(err, "bucket/object"+k+"/"+b, b)
 			} else { // head succeeded
 				tooBig := false
 				if head.ContentLength != nil {
 					count.IncrDelta("object-length", *head.ContentLength)
+					count.IncrDelta("object-length-"+b, *head.ContentLength)
 					if *head.ContentLength > 5368709000 {
 						fmt.Println("Big object", *aws.String(b), *aws.String(k))
+						count.Incr("big-object")
+						count.Incr("big-object-" + b)
 						tooBig = true
 					}
 				}
@@ -267,6 +277,7 @@ func handleObject() {
 					// we will be reencrypting
 					if !isObjectEncOk(b, *head) {
 						count.Incr("encrypt-bad")
+						count.Incr("encrypt-bad-" + b)
 						if !(theConfig["setToDangerToReencrypt"].StrVal == "danger") {
 							continue
 						}
@@ -274,15 +285,18 @@ func handleObject() {
 							retry := reencryptObject(b, k, sess)
 							if retry {
 								count.Incr("retry-object")
+								count.Incr("retry-object-" + b)
 								theCtx.objectChan <- kb
 							}
 						}
 					} else {
 						count.Incr("encrypt-good")
+						count.Incr("encrypt-good-" + b)
 					}
 				} else {
 					if !isObjectEncOk(b, *head) {
 						count.Incr("unencrypted")
+						count.Incr("unencrypted-" + b)
 						if rand.Float64() < (1.0 / (float64(count.ReadSync("unencrypted")))) {
 							if nil == head.ServerSideEncryption {
 								fmt.Println("ERROR: no encryption", b, k)
@@ -344,7 +358,7 @@ func handleBucket() {
 			count.Incr("aws-list-objects-v2")
 			wg := new(sync.WaitGroup) // different WG to make bucket wait for objects
 			svc.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
-				log.Printf("Got a new page of objects")
+				//log.Printf("Got a new page of objects")
 				for _, content := range resp.Contents {
 					key := *content.Key
 					wg.Add(1)        // Done in handleObject
