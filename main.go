@@ -32,7 +32,6 @@ var defaultConfig = `#
 oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
-oneBucketKMSKeyId = none
 checkAcl = false
 aclOwnerAcct = true
 checkOrgAccounts = true
@@ -170,6 +169,8 @@ func getDefaultKey(b *string, svc *s3.S3) (string, error) {
 			}
 		}
 	}
+	fmt.Println("Got kms key", keyID, " for bucket", *b)
+	setBucketKey(b, keyID)
 	return keyID, nil
 }
 
@@ -358,7 +359,7 @@ func handleBucket() {
 			count.Incr("aws-list-objects-v2")
 			wg := new(sync.WaitGroup) // different WG to make bucket wait for objects
 			svc.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
-				//log.Printf("Got a new page of objects")
+				count.Incr("object-page")
 				for _, content := range resp.Contents {
 					key := *content.Key
 					wg.Add(1)        // Done in handleObject
