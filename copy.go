@@ -17,6 +17,7 @@ import (
 func copyOnce(source string,
 	dest string,
 	bucketName string,
+	keyID string,
 	sess *session.Session) (*s3.CopyObjectOutput, error) {
 	svc := s3.New(sess)
 	input := &s3.CopyObjectInput{

@@ -47,6 +47,7 @@ func isObjectEncOk(b string, head s3.HeadObjectOutput) bool {
 }
 
 // given a bucket, an object, and a session, reencrypt it
+// returns true if the error is retryable
 func reencryptObject(bucketName string,
 	objectName string,
 	sess *session.Session) bool {
@@ -56,16 +57,27 @@ func reencryptObject(bucketName string,
 		return false
 	}
 
+	keyID := ""
+	hasKeyID := false
+	theCtx.keyRW.RLock()
+	keyID, hasKeyID = theCtx.keyIDMap[bucketName]
+	theCtx.keyRW.RUnlock()
+	if !hasKeyID {
+		count.Incr("skip-encryp-no-keyid")
+		return false // not retryable
+	}
 	count.Incr("start-encrypt")
 	// first copy setup
 	_, err := copyOnce(
 		bucketName+"/"+objectName,
 		objectName+"%%%",
 		bucketName,
+		keyID,
 		sess)
 	if err != nil {
 		// logging done
 		fmt.Println("Got err", err.Error(), bucketName, objectName)
+		count.Incr("one-copy-failed")
 		return true
 	}
 	count.Incr("one-copy")
@@ -75,11 +87,13 @@ func reencryptObject(bucketName string,
 		bucketName+"/"+objectName+"%25%25%25",
 		objectName,
 		bucketName,
+		keyID,
 		sess)
 
 	if err != nil {
 		// logging done
 		fmt.Println("Got 2nd err", err.Error(), bucketName, objectName)
+		count.Incr("two-copy-failed")
 		return true
 	}
 	count.Incr("two-copy")
@@ -91,10 +105,11 @@ func reencryptObject(bucketName string,
 	if err != nil {
 		// logging done
 		fmt.Println("Got delete err", err.Error(), bucketName, objectName)
+		count.Incr("delete-failed")
 		return true
 	}
 	// check for ok?
 	count.Incr("encrypted-ok")
-	return false
+	return false // actually is retriable :)
 
 }
