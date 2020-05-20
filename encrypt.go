@@ -19,23 +19,30 @@ func isObjectEncOk(b string, head s3.HeadObjectOutput) bool {
 	theCtx.keyRW.RLock()
 	keyID, hasKeyID = theCtx.keyIDMap[b]
 	theCtx.keyRW.RUnlock()
+
 	if hasKeyID {
 		// must be encrypted and right key id
 		if head.ServerSideEncryption == nil {
+			count.Incr("encrypt-no-server-side-fail")
 			return false
 		}
 		if *head.ServerSideEncryption != "aws:kms" {
+			count.Incr("encrypt-no-server-side-kms")
 			return false
 		}
 		if !strings.Contains(*head.SSEKMSKeyId, keyID) {
+			count.Incr("encrypt-keymismatch-fail")
 			return false
 		}
+		count.Incr("encrypt-check-ok-kms")
 		return true
 	}
 	// no keyID so just needs to be something
 	if head.ServerSideEncryption == nil {
+		count.Incr("encrypt-no-sse-fail")
 		return false
 	}
+	count.Incr("encrypt-no-key-id-for-bucket-ok")
 	return true
 }
 
