@@ -25,7 +25,7 @@ func copyOnce(source string,
 		Key:                  aws.String(dest),
 		CopySource:           aws.String(source),
 		ServerSideEncryption: aws.String(s3.ServerSideEncryptionAwsKms),
-		SSEKMSKeyId:          aws.String(theConfig["oneBucketKMSKeyId"].StrVal),
+		SSEKMSKeyId:          &keyID,
 	}
 	n := 0.0
 	for {
