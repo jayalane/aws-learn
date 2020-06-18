@@ -1,0 +1,15 @@
+
+#
+checkOrgAccounts = true
+numBucketHandlers = 10
+numObjectHandlers = 40
+oneBucket = true
+oneBucketReencrypt = true
+oneBucketName = %%%BUCKET%%%
+# 
+setToDangerToDeleteMatching = dnfasdfasdf
+justListFiles = false
+listFilesMatchingPrefix = *
+listFilesMatchingExclude = %%%
+useDeleteAnywayFile = 
+# comments

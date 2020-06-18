@@ -38,7 +38,7 @@ checkOrgAccounts = true
 listFilesMatchingSuffix = %%%/
 listFilesMatchingPrefix = %%%
 listFilesMatchingExclude = %%%
-useDeleteAnywayFile = 
+useDeleteAnywayFile =
 justListFiles = false
 setToDangerToReencrypt = no
 setToDangerToDeleteMatching = no
@@ -231,7 +231,7 @@ func handleObject() {
 					count.IncrDelta("list-found", 1)
 					count.IncrDelta("list-found-"+b, 1)
 					if theConfig["setToDangerToDeleteMatching"].StrVal == "danger" {
-						// fmt.Println("Going to delete", k)
+						fmt.Println("Going to delete", k)
 						_, err = deleteObject(k, b, sess)
 						if err != nil {
 							fmt.Println("Error deleting", k, b, err.Error())
@@ -440,7 +440,7 @@ func main() {
 	count.InitCounters()
 	// config
 	if len(os.Args) > 1 && os.Args[1] == "--dumpConfig" {
-		log.Println(defaultConfig)
+		fmt.Println(defaultConfig)
 		return
 	}
 	// still config
