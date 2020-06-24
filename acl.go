@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	count "github.com/jayalane/go-counter"
 	"os"
+	"strings"
 )
 
 func getCanonID(acct string) (string, bool) {
@@ -20,8 +21,14 @@ func getCanonID(acct string) (string, bool) {
 
 }
 
-func tryAlternativeSession() *session.Session {
-	sess := getSessForAcct(theConfig["aclOwnerAcct"].StrVal)
+func tryAlternativeSession(tryAgain int, obj string) *session.Session {
+	if tryAgain == 1 {
+		sess := getSessForAcct(theConfig["aclOwnerAcct"].StrVal)
+		return sess
+	}
+	objS := strings.Split(obj, "/")
+	sess := getSessForAcct(objS[0])
+	fmt.Println("Try again with", obj, objS[0], sess)
 	return sess
 }
 
@@ -90,15 +97,19 @@ func handleACL(bucket string,
 	obj string,
 	acct string,
 	sess *session.Session) {
-	tryAgain := false
+	tryAgain := 0
 	var err error
 	getACL := &s3.GetObjectAclOutput{}
 	var svc *s3.S3
 	for {
-		if tryAgain {
-			sess = tryAlternativeSession()
+		if tryAgain > 0 {
+			sess = tryAlternativeSession(tryAgain, obj)
 			if sess == nil {
-				panic("Doing acl checks but not powerful enough - use root account creds")
+				if tryAgain == 2 {
+					panic("Doing acl checks but not powerful enough - use root account creds")
+				}
+				tryAgain = tryAgain + 1
+				continue
 			}
 		}
 		svc = s3.New(sess)
@@ -110,12 +121,14 @@ func handleACL(bucket string,
 
 		if err != nil {
 			is403 := logCountErrTag(err, "GetObjectAcl failed"+bucket+"/"+obj, bucket)
-			if tryAgain {
+			if tryAgain == 2 {
 				fmt.Println("Try again failed - check aclOwnerAcct config.txt setting", bucket, obj, err)
 				return
+			} else if tryAgain == 1 {
+
 			}
 			if is403 {
-				tryAgain = true
+				tryAgain = tryAgain + 1
 			} else {
 				return // already logged
 			}
