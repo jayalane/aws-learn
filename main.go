@@ -41,6 +41,7 @@ listFilesMatchingExclude = %%%
 useDeleteAnywayFile =
 justListFiles = false
 setToDangerToReencrypt = no
+reencryptToTargetBucket = 
 setToDangerToDeleteMatching = no
 setToDangerToForceACL = no
 numAccountHandlers = 1
@@ -94,21 +95,29 @@ func getSessForAcct(a string) *session.Session {
 		}
 		return initSess
 	}
-
 	theCtx.credsRW.RLock()
 	defer theCtx.credsRW.RUnlock()
-	if val, ok := theCtx.creds[a]; ok {
-		count.Incr("aws-newsession")
-		sess, err := session.NewSession(&aws.Config{
-			Region:      aws.String("us-east-1"),
-			Credentials: val})
+
+	var creds *credentials.Credentials
+	var ok bool
+	if creds, ok = theCtx.creds[a]; !ok {
+		initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+		count.Incr("aws-newsession-root")
 		if err != nil {
-			log.Println("Error getting session for acct id", a, err)
-			return nil
+			panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
 		}
-		return sess
+		creds = getCredentials(*initSess, a)
 	}
-	return nil
+	count.Incr("aws-newsession-acct")
+	sess, err := session.NewSession(&aws.Config{
+		Region:      aws.String("us-east-1"),
+		Credentials: creds})
+	if err != nil {
+		fmt.Println("Can't get session for master", err.Error())
+		count.Incr("aws-newsession-error")
+		return nil
+	}
+	return sess
 }
 
 // given an account, gets a session
@@ -358,7 +367,7 @@ func handleBucket() {
 			req := &s3.ListObjectsV2Input{Bucket: aws.String(b.bucket)}
 			count.Incr("aws-list-objects-v2")
 			wg := new(sync.WaitGroup) // different WG to make bucket wait for objects
-			svc.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
+			_ = svc.ListObjectsV2Pages(req, func(resp *s3.ListObjectsV2Output, lastPage bool) bool {
 				count.Incr("object-page")
 				for _, content := range resp.Contents {
 					key := *content.Key
