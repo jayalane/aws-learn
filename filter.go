@@ -13,7 +13,7 @@ import (
 
 func readWillDeleteFile(filename string) (*[]string, error) {
 
-	var filter []string = make([]string, 0, 64)
+	var filter = make([]string, 0, 64)
 	if len(filename) == 0 {
 		fmt.Println("No will delete file specified, using empty", filename)
 		return &filter, nil
