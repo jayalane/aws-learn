@@ -120,7 +120,7 @@ func getSessForAcct(a string) *session.Session {
 	return sess
 }
 
-// given an account, gets a session
+// given an account, gets a Canonical ID
 func lookupCanonicalIDForAcct(a string, sess *session.Session) {
 	theCtx.canonRW.Lock()
 	defer theCtx.canonRW.Unlock()
@@ -261,6 +261,14 @@ func handleObject() {
 				count.Incr("handle-acl")
 				count.Incr("handle-acl-" + b)
 				handleACL(b, k, kb.acctID, sess)
+				kb.wg.Done()
+				theCtx.wg.Done()
+				continue
+			}
+			if theConfig["threeAcl"].BoolVal {
+				count.Incr("handle-3acl")
+				count.Incr("handle-3acl-" + b)
+				handleThreeACL(b, k, kb.acctID, sess)
 				kb.wg.Done()
 				theCtx.wg.Done()
 				continue
@@ -515,6 +523,7 @@ func main() {
 		}
 		for { // to handle paginatin - break is down in the "no next token"
 			for _, r := range la.Accounts {
+				fmt.Println("Account", r.Status, r)
 				if *r.Status == "ACTIVE" {
 					theCtx.accountChan <- *r.Id
 					theCtx.wg.Add(1) // done in handleBucket

@@ -3,23 +3,13 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	count "github.com/jayalane/go-counter"
-	"os"
 	"strings"
 )
-
-func getCanonID(acct string) (string, bool) {
-	theCtx.canonRW.RLock()
-	canonID, ok := theCtx.canonIDMap[acct]
-	theCtx.canonRW.RUnlock()
-	return canonID, ok
-
-}
 
 func tryAlternativeSession(tryAgain int, obj string) *session.Session {
 	if tryAgain == 1 {
@@ -33,14 +23,15 @@ func tryAlternativeSession(tryAgain int, obj string) *session.Session {
 }
 
 // addACL adds in the canonical ID as with full access
-func fixACL(acl s3.GetObjectAclOutput,
+func fixACL(
+	acl s3.GetObjectAclOutput,
 	bucket string,
 	obj string,
 	acct string) (s3.AccessControlPolicy, error) {
 
 	canonID, ok := getCanonID(acct)
 	if !ok {
-		return s3.AccessControlPolicy{}, errors.New("Can't get canonical ID")
+		return s3.AccessControlPolicy{}, fmt.Errorf("can't get canonical ID for %s", acct)
 	}
 
 	newACL := s3.AccessControlPolicy{}
@@ -49,7 +40,6 @@ func fixACL(acl s3.GetObjectAclOutput,
 	for _, g := range acl.Grants {
 		newACL.Grants = append(newACL.Grants, g)
 	}
-
 	newG := s3.Grant{}
 	newGrantee := s3.Grantee{}
 	newGrantee.ID = &canonID // thank god it's not c
@@ -68,14 +58,43 @@ func fixACL(acl s3.GetObjectAclOutput,
 func checkACL(acl s3.GetObjectAclOutput,
 	bucket string,
 	obj string,
-	acct string) bool {
-	// fmt.Println("Checking ACL for", bucket, obj, acct)
-	canonID, ok := getCanonID(acct)
+	desiredOwnerAcct string) bool {
+	// fmt.Println("Checking ACL for", bucket, obj, desired_own_acct)
+	canonID, ok := getCanonID(desiredOwnerAcct)
 	if !ok {
 		return true // fail open
 	}
 	if (acl.Owner.ID != nil) && (*acl.Owner.ID == canonID) {
-		fmt.Println("bad owner for", bucket, obj, acct)
+		fmt.Println("bad owner for", bucket, obj, desiredOwnerAcct)
+		return false
+	}
+	found := false
+	for _, g := range acl.Grants {
+		if (g.Grantee.ID != nil) && (*g.Grantee.ID == canonID) {
+			found = true
+		}
+	}
+	if !found {
+		fmt.Println("Wrong ACL!", acl, bucket, obj)
+		return true
+	}
+	return false
+}
+
+// checkACL returns true if the ACL is ok, false otherwise
+func checkThreeACL(
+	acl s3.GetObjectAclOutput,
+	bucket string,
+	obj string,
+	desiredOwnerAcct string) bool {
+
+	fmt.Println("Checking ACL for", bucket, obj, desiredOwnerAcct)
+	canonID, ok := getCanonID(desiredOwnerAcct)
+	if !ok {
+		return true // fail open
+	}
+	if (acl.Owner.ID != nil) && (*acl.Owner.ID == canonID) {
+		fmt.Println("bad owner for", bucket, obj, desiredOwnerAcct)
 		return false
 	}
 	found := false
@@ -93,9 +112,10 @@ func checkACL(acl s3.GetObjectAclOutput,
 
 // handleAcl does all the logic for Acl get/set
 // no error - it will print out any errors
-func handleACL(bucket string,
+func handleACL(
+	bucket string,
 	obj string,
-	acct string,
+	bucketAcct string,
 	sess *session.Session) {
 	tryAgain := 0
 	var err error
@@ -136,14 +156,14 @@ func handleACL(bucket string,
 			break
 		}
 	}
-	doIt := checkACL(*getACL, bucket, obj, acct)
+	doIt := checkACL(*getACL, bucket, obj, bucketAcct)
 	if doIt {
-		fmt.Println("ERROR: Got result", doIt, acct, bucket, obj, *getACL)
+		fmt.Println("ERROR: Got result", doIt, bucketAcct, bucket, obj, *getACL)
 		count.Incr("bad-acl-found")
 	}
 	if doIt && theConfig["setToDangerToForceACL"].StrVal == "danger" {
 		// todo retry -- but actually we have already retried
-		newACL, err := fixACL(*getACL, bucket, obj, acct)
+		newACL, err := fixACL(*getACL, bucket, obj, bucketAcct)
 		fmt.Println("NewACL/OldACL", *getACL, newACL)
 		if err != nil {
 			logCountErr(err, "Get new ACL failed"+bucket+"/"+obj)
@@ -159,7 +179,7 @@ func handleACL(bucket string,
 			logCountErr(err, "PutObjectAcl failed"+bucket+"/"+obj)
 			return
 		}
-		fmt.Println("Successfully fixed", acct, bucket, obj)
+		fmt.Println("Successfully fixed", bucketAcct, bucket, obj)
 		getACL, err = svc.GetObjectAcl(&s3.GetObjectAclInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(obj),
@@ -169,7 +189,67 @@ func handleACL(bucket string,
 		} else {
 			fmt.Println("refetched acl err", err)
 		}
-		os.Exit(2)
+	}
+}
+
+// handleThreeAcl does all the logic for Acl get/set
+// no error - it will print out any errors
+func handleThreeACL(
+	bucket string,
+	obj string,
+	bucketAcct string,
+	sess *session.Session) {
+
+	var err error
+	getACL := &s3.GetObjectAclOutput{}
+	var svc *s3.S3
+	svc = s3.New(sess)
+	count.Incr("aws-get-object-3acl")
+
+	getACL, err = svc.GetObjectAcl(&s3.GetObjectAclInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(obj),
+	})
+
+	if err != nil {
+		_ = logCountErrTag(err, "GetObjectAcl failed"+bucket+"/"+obj, bucket)
+		return // already logged
+	}
+	for _, readAcct := range strings.Split((theConfig)["threeAcctAclReader"].StrVal, ",") {
+
+		doIt := checkThreeACL(*getACL, bucket, obj, readAcct)
+		if doIt {
+			fmt.Println("ERROR: Got result", doIt, bucket, obj, *getACL)
+			count.Incr("bad-3acl-found")
+		}
+		if doIt && theConfig["setToDangerToForceACL"].StrVal == "danger" {
+			newACL, err := fixACL(*getACL, bucket, obj, readAcct)
+			fmt.Println("NewACL/OldACL", *getACL, newACL)
+			if err != nil {
+				logCountErr(err, "Get new ACL failed"+bucket+"/"+obj)
+				continue
+			}
+			count.Incr("aws-put-object-3acl")
+			_, err = svc.PutObjectAcl(&s3.PutObjectAclInput{
+				AccessControlPolicy: &newACL,
+				Bucket:              aws.String(bucket),
+				Key:                 aws.String(obj),
+			})
+			if err != nil {
+				logCountErr(err, "PutObjectAcl failed"+bucket+"/"+obj)
+				return
+			}
+			fmt.Println("Successfully fixed", readAcct, bucket, obj)
+			getACL, err = svc.GetObjectAcl(&s3.GetObjectAclInput{
+				Bucket: aws.String(bucket),
+				Key:    aws.String(obj),
+			})
+			if getACL != nil {
+				fmt.Println("refetched acl", obj, *getACL)
+			} else {
+				fmt.Println("refetched acl err", err)
+			}
+		}
 	}
 
 }

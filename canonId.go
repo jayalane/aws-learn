@@ -20,8 +20,10 @@ func parseBucketList(bObj *s3.ListBucketsOutput) (string, error) {
 
 // lookupCanonID does all the logic to get the
 // account canonical ID from the s3 list-bukcets
-func lookupCanonID(acct string,
+func lookupCanonID(
+	acct string,
 	sess *session.Session) (string, error) {
+
 	log.Println("Looking up canonical id for ", acct)
 	svc := s3.New(sess)
 	count.Incr("aws-listbuckets-canon")
@@ -32,4 +34,21 @@ func lookupCanonID(acct string,
 	}
 	return parseBucketList(bObj)
 
+}
+
+// getCanonIDMaybeCall checks the cache of canonical IDs
+// and will make a session and call AWS if needed
+func getCanonIDMaybeCall(acct string) (string, bool) {
+	theCtx.canonRW.RLock()
+	canonID, ok := theCtx.canonIDMap[acct]
+	theCtx.canonRW.RUnlock()
+	if !ok {
+		return canonID, ok
+	}
+	sess := getSessForAcct(acct)
+	lookupCanonicalIDForAcct(acct, sess)
+	theCtx.canonRW.RLock()
+	canonID, ok := theCtx.canonIDMap[acct]
+	theCtx.canonRW.RUnlock()
+	return canonID, ok
 }
