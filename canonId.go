@@ -48,7 +48,7 @@ func getCanonIDMaybeCall(acct string) (string, bool) {
 	sess := getSessForAcct(acct)
 	lookupCanonicalIDForAcct(acct, sess)
 	theCtx.canonRW.RLock()
-	canonID, ok := theCtx.canonIDMap[acct]
+	canonID, ok = theCtx.canonIDMap[acct]
 	theCtx.canonRW.RUnlock()
 	return canonID, ok
 }

@@ -29,7 +29,7 @@ func fixACL(
 	obj string,
 	acct string) (s3.AccessControlPolicy, error) {
 
-	canonID, ok := getCanonID(acct)
+	canonID, ok := getCanonIDMaybeCall(acct)
 	if !ok {
 		return s3.AccessControlPolicy{}, fmt.Errorf("can't get canonical ID for %s", acct)
 	}
@@ -60,13 +60,13 @@ func checkACL(acl s3.GetObjectAclOutput,
 	obj string,
 	desiredOwnerAcct string) bool {
 	// fmt.Println("Checking ACL for", bucket, obj, desired_own_acct)
-	canonID, ok := getCanonID(desiredOwnerAcct)
+	canonID, ok := getCanonIDMaybeCall(desiredOwnerAcct)
 	if !ok {
 		return true // fail open
 	}
 	if (acl.Owner.ID != nil) && (*acl.Owner.ID == canonID) {
 		fmt.Println("bad owner for", bucket, obj, desiredOwnerAcct)
-		return false
+		return true // not sure this will work
 	}
 	found := false
 	for _, g := range acl.Grants {
@@ -89,7 +89,7 @@ func checkThreeACL(
 	desiredOwnerAcct string) bool {
 
 	fmt.Println("Checking ACL for", bucket, obj, desiredOwnerAcct)
-	canonID, ok := getCanonID(desiredOwnerAcct)
+	canonID, ok := getCanonIDMaybeCall(desiredOwnerAcct)
 	if !ok {
 		return true // fail open
 	}
