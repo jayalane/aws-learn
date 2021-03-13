@@ -471,9 +471,13 @@ func handleAccount() {
 }
 
 func main() {
+	// Simplest transform function: put all the data files into the base dir.
+	flatTransform := func(s string) []string { return []string{} }
+
 	// Initialize a new diskv store, rooted at "my-data-dir", with a 1MB cache.
 	theCtx.doneObjects = diskv.New(diskv.Options{
-		BasePath:     "my-data-dir",
+		BasePath:     "copyCache",
+		Transform:    flatTransform,
 		CacheSizeMax: 1024 * 1024,
 	})
 	// stats
