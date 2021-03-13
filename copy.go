@@ -17,16 +17,29 @@ import (
 func copyOnce(source string,
 	dest string,
 	bucketName string,
+	keyNeeded bool,
 	keyID string,
 	sess *session.Session) (*s3.CopyObjectOutput, error) {
 	svc := s3.New(sess)
-	input := &s3.CopyObjectInput{
-		Bucket:               aws.String(bucketName),
-		Key:                  aws.String(dest),
-		CopySource:           aws.String(source),
-		ServerSideEncryption: aws.String(s3.ServerSideEncryptionAwsKms),
-		SSEKMSKeyId:          &keyID,
+	var input *s3.CopyObjectInput
+
+	if keyNeeded {
+		input = &s3.CopyObjectInput{
+			Bucket:               aws.String(bucketName),
+			Key:                  aws.String(dest),
+			CopySource:           aws.String(source),
+			ServerSideEncryption: aws.String(s3.ServerSideEncryptionAwsKms),
+			SSEKMSKeyId:          &keyID,
+		}
+	} else {
+		input = &s3.CopyObjectInput{
+			Bucket:               aws.String(bucketName),
+			Key:                  aws.String(dest),
+			CopySource:           aws.String(source),
+			ServerSideEncryption: aws.String(s3.ServerSideEncryptionAes256),
+		}
 	}
+
 	n := 0.0
 	for {
 		n = n + 1.0

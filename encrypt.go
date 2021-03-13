@@ -50,6 +50,7 @@ func isObjectEncOk(b string, head s3.HeadObjectOutput) bool {
 // returns true if the error is retryable
 func reencryptObject(bucketName string,
 	objectName string,
+	keyNeeded bool,
 	sess *session.Session) bool {
 
 	if strings.HasSuffix(objectName, "%%%") {
@@ -62,7 +63,7 @@ func reencryptObject(bucketName string,
 	theCtx.keyRW.RLock()
 	keyID, hasKeyID = theCtx.keyIDMap[bucketName]
 	theCtx.keyRW.RUnlock()
-	if !hasKeyID {
+	if !hasKeyID && keyNeeded {
 		count.Incr("skip-encryp-no-keyid")
 		return false // not retryable
 	}
@@ -72,6 +73,7 @@ func reencryptObject(bucketName string,
 		bucketName+"/"+objectName,
 		objectName+"%%%",
 		bucketName,
+		keyNeeded,
 		keyID,
 		sess)
 	if err != nil {
@@ -87,6 +89,7 @@ func reencryptObject(bucketName string,
 		bucketName+"/"+objectName+"%25%25%25",
 		objectName,
 		bucketName,
+		keyNeeded,
 		keyID,
 		sess)
 

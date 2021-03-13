@@ -32,6 +32,8 @@ var defaultConfig = `#
 oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
+reCopyFile = false
+setToDangerToReCopy = asdfasd
 checkAcl = false
 aclOwnerAcct = true
 checkOrgAccounts = true
@@ -291,7 +293,22 @@ func handleObject() {
 						tooBig = true
 					}
 				}
-				if theConfig["oneBucketReencrypt"].BoolVal {
+				if theConfig["reCopyFiles"].BoolVal {
+					count.Incr("copy-start")
+					count.Incr("copy-start-" + b)
+					if !(theConfig["setToDangerToReCopy"].StrVal == "danger") {
+						continue
+					}
+
+					if !tooBig {
+						retry := reencryptObject(b, k, false, sess) // false is don't care about key
+						if retry {
+							count.Incr("retry-copy-object")
+							count.Incr("retry-copy-object-" + b)
+							theCtx.objectChan <- kb
+						}
+					}
+				} else if theConfig["oneBucketReencrypt"].BoolVal {
 					// we will be reencrypting
 					if !isObjectEncOk(b, *head) {
 						count.Incr("encrypt-bad")
@@ -300,7 +317,7 @@ func handleObject() {
 							continue
 						}
 						if !tooBig {
-							retry := reencryptObject(b, k, sess)
+							retry := reencryptObject(b, k, true, sess) // true is must have KMS ID
 							if retry {
 								count.Incr("retry-object")
 								count.Incr("retry-object-" + b)
