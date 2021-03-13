@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/organizations"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/boltdb/bolt"
 	count "github.com/jayalane/go-counter"
 	"github.com/jayalane/go-tinyconfig"
-	"github.com/peterbourgon/diskv"
 	"log"
 	"math/rand"
 	"net"
@@ -70,7 +70,7 @@ type bucketChanItem struct {
 
 // global state
 type context struct {
-	doneObjects *diskv.Diskv
+	doneObjects *bolt.DB
 	lastObj     uint64
 	filter      *[]string
 	bucketChan  chan bucketChanItem
@@ -471,24 +471,30 @@ func handleAccount() {
 }
 
 func main() {
-	// Simplest transform function: put all the data files into the base dir.
-	flatTransform := func(s string) []string { return []string{} }
-
-	// Initialize a new diskv store, rooted at "my-data-dir", with a 1MB cache.
-	theCtx.doneObjects = diskv.New(diskv.Options{
-		BasePath:     "copyCache",
-		Transform:    flatTransform,
-		CacheSizeMax: 1024 * 1024,
+	// Bolt DB for done Objects for copy
+	var err error
+	theCtx.doneObjects, err = bolt.Open("doneObjects.db", 0600, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer theCtx.doneObjects.Close()
+	// make sure our "bucket" in BoltDB exists
+	theCtx.doneObjects.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte("doneObjects"))
+		if err != nil {
+			panic(fmt.Sprintf("create bucket: %s", err))
+		}
+		return nil
 	})
 	// stats
 	count.InitCounters()
+
 	// config
 	if len(os.Args) > 1 && os.Args[1] == "--dumpConfig" {
 		fmt.Println(defaultConfig)
 		return
 	}
 	// still config
-	var err error
 	theConfig, err = config.ReadConfig("config.txt", defaultConfig)
 	log.Println("Config", theConfig)
 	if err != nil {
@@ -497,6 +503,7 @@ func main() {
 			os.Exit(11)
 		}
 	}
+
 	// filters for delete only these things under these things
 	if len(theConfig["useDeleteAnywayFile"].StrVal) > 0 {
 		theCtx.filter, err = readWillDeleteFile(theConfig["useDeleteAnywayFile"].StrVal)
@@ -510,6 +517,7 @@ func main() {
 			os.Exit(11)
 		}
 	}
+
 	// init the globals
 	atomic.StoreUint64(&theCtx.lastObj, makeTimestamp())
 	theCtx.wg = new(sync.WaitGroup)

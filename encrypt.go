@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/boltdb/bolt"
 	count "github.com/jayalane/go-counter"
 	"strings"
 )
@@ -53,6 +54,42 @@ func keyName(bucket string,
 	return bs
 }
 
+// checkForDoneObject checks the disk file if the
+// object was already done
+func checkForDoneObject(bucket string,
+	object string) bool {
+	retVal := make(chan bool)
+	bs := keyName(bucket, object)
+	err := theCtx.doneObjects.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("doneObjects"))
+		v := b.Get([]byte(bs))
+		if v == nil { // not found
+			retVal <- false
+		} else {
+			retVal <- true
+		}
+		return nil
+	})
+	if err != nil {
+		return false
+	}
+	r := <-retVal
+	return r
+}
+
+// setDoneObject writes to the disk that it was done
+func setDoneObject(bucket string,
+	object string) {
+	bs := keyName(bucket, object)
+	theCtx.doneObjects.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("doneObjects"))
+		err := b.Put([]byte(bs), []byte("1")) // 1 doesn't matter
+		return err
+	})
+	// write timing doesn't matter - the race condition is between
+	// runs of the program
+}
+
 // given a bucket, an object, and a session, reencrypt it
 // returns true if the error is retryable
 func reencryptObject(bucketName string,
@@ -67,8 +104,7 @@ func reencryptObject(bucketName string,
 	if theConfig["reCopyFiles"].BoolVal {
 		// keep track.  re-encrypt, the state is in the object
 		// for recopying all it is not (maybe mod time but ...
-		bs := keyName(bucketName, objectName)
-		if theCtx.doneObjects.Has(bs) {
+		if checkForDoneObject(bucketName, objectName) {
 			count.Incr("skip-done-copy")
 			return false
 		}
@@ -131,9 +167,7 @@ func reencryptObject(bucketName string,
 	count.Incr("encrypted-ok")
 	if theConfig["reCopyFiles"].BoolVal {
 		// reCopy lacks state in S3
-		bs := keyName(bucketName, objectName)
-		v := [...]byte{1}
-		theCtx.doneObjects.Write(bs, v[:]) // 1 doesn't matter
+		setDoneObject(bucketName, objectName)
 	}
 	return false // actually is retriable :)
 
