@@ -46,6 +46,13 @@ func isObjectEncOk(b string, head s3.HeadObjectOutput) bool {
 	return true
 }
 
+// keyName returns the hash key for the given bucket/object combo
+func keyName(bucket string,
+	object string) string {
+	bs := fmt.Sprintf("%s-%s", bucket, object)
+	return bs
+}
+
 // given a bucket, an object, and a session, reencrypt it
 // returns true if the error is retryable
 func reencryptObject(bucketName string,
@@ -56,6 +63,15 @@ func reencryptObject(bucketName string,
 	if strings.HasSuffix(objectName, "%%%") {
 		count.Incr("skip-percents")
 		return false
+	}
+	if theConfig["reCopyFiles"].BoolVal {
+		// keep track.  re-encrypt, the state is in the object
+		// for recopying all it is not (maybe mod time but ...
+		bs := keyName(bucketName, objectName)
+		if theCtx.doneObjects.Has(bs) {
+			count.Incr("skip-done-copy")
+			return false
+		}
 	}
 
 	keyID := ""
@@ -113,6 +129,12 @@ func reencryptObject(bucketName string,
 	}
 	// check for ok?
 	count.Incr("encrypted-ok")
+	if theConfig["reCopyFiles"].BoolVal {
+		// reCopy lacks state in S3
+		bs := keyName(bucketName, objectName)
+		v := [...]byte{1}
+		theCtx.doneObjects.Write(bs, v[:]) // 1 doesn't matter
+	}
 	return false // actually is retriable :)
 
 }

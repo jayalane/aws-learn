@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	count "github.com/jayalane/go-counter"
 	"github.com/jayalane/go-tinyconfig"
+	"github.com/peterbourgon/diskv"
 	"log"
 	"math/rand"
 	"net"
@@ -69,6 +70,7 @@ type bucketChanItem struct {
 
 // global state
 type context struct {
+	doneObjects *diskv.Diskv
 	lastObj     uint64
 	filter      *[]string
 	bucketChan  chan bucketChanItem
@@ -299,7 +301,6 @@ func handleObject() {
 					if !(theConfig["setToDangerToReCopy"].StrVal == "danger") {
 						continue
 					}
-
 					if !tooBig {
 						retry := reencryptObject(b, k, false, sess) // false is don't care about key
 						if retry {
@@ -470,6 +471,11 @@ func handleAccount() {
 }
 
 func main() {
+	// Initialize a new diskv store, rooted at "my-data-dir", with a 1MB cache.
+	theCtx.doneObjects = diskv.New(diskv.Options{
+		BasePath:     "my-data-dir",
+		CacheSizeMax: 1024 * 1024,
+	})
 	// stats
 	count.InitCounters()
 	// config
