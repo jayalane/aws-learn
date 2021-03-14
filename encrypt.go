@@ -53,13 +53,6 @@ func isObjectEncOk(b string, head s3.HeadObjectOutput) bool {
 	return true
 }
 
-// keyName returns the hash key for the given bucket/object combo
-func keyName(bucket string,
-	object string) string {
-	bs := fmt.Sprintf("%s-%s", bucket, object)
-	return bs
-}
-
 // given a bucket, an object, and a session, reencrypt it
 // returns true if the error is retryable
 func reencryptObject(bucketName string,
