@@ -8,10 +8,16 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/boltdb/bolt"
 	count "github.com/jayalane/go-counter"
 	"strings"
 )
+
+// keyName returns the hash key for the given bucket/object combo
+func keyName(bucket string,
+	object string) string {
+	bs := fmt.Sprintf("%s-%s", bucket, object)
+	return bs
+}
 
 // given a bucket and head check if the encryption is ok
 func isObjectEncOk(b string, head s3.HeadObjectOutput) bool {
@@ -47,49 +53,6 @@ func isObjectEncOk(b string, head s3.HeadObjectOutput) bool {
 	return true
 }
 
-// keyName returns the hash key for the given bucket/object combo
-func keyName(bucket string,
-	object string) string {
-	bs := fmt.Sprintf("%s-%s", bucket, object)
-	return bs
-}
-
-// checkForDoneObject checks the disk file if the
-// object was already done
-func checkForDoneObject(bucket string,
-	object string) bool {
-	retVal := make(chan bool)
-	bs := keyName(bucket, object)
-	err := theCtx.doneObjects.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("doneObjects"))
-		v := b.Get([]byte(bs))
-		if v == nil { // not found
-			retVal <- false
-		} else {
-			retVal <- true
-		}
-		return nil
-	})
-	if err != nil {
-		return false
-	}
-	r := <-retVal
-	return r
-}
-
-// setDoneObject writes to the disk that it was done
-func setDoneObject(bucket string,
-	object string) {
-	bs := keyName(bucket, object)
-	theCtx.doneObjects.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("doneObjects"))
-		err := b.Put([]byte(bs), []byte("1")) // 1 doesn't matter
-		return err
-	})
-	// write timing doesn't matter - the race condition is between
-	// runs of the program
-}
-
 // given a bucket, an object, and a session, reencrypt it
 // returns true if the error is retryable
 func reencryptObject(bucketName string,
@@ -104,7 +67,8 @@ func reencryptObject(bucketName string,
 	if theConfig["reCopyFiles"].BoolVal {
 		// keep track.  re-encrypt, the state is in the object
 		// for recopying all it is not (maybe mod time but ...
-		if checkForDoneObject(bucketName, objectName) {
+		sb := keyName(bucketName, objectName)
+		if theCtx.doneObjects.InSet(sb) {
 			count.Incr("skip-done-copy")
 			return false
 		}
@@ -167,8 +131,9 @@ func reencryptObject(bucketName string,
 	count.Incr("encrypted-ok")
 	if theConfig["reCopyFiles"].BoolVal {
 		// reCopy lacks state in S3
-		setDoneObject(bucketName, objectName)
+		sb := keyName(bucketName, objectName)
+		theCtx.doneObjects.Add(sb) // eventually on disk
 	}
-	return false // actually is retriable :)
+	return false // actually is retriable :) (i.e. these operations are idempotent
 
 }

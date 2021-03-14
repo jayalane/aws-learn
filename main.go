@@ -1,5 +1,4 @@
 // -*- tab-width: 2 -*-
-
 package main
 
 import (
@@ -12,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/organizations"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/boltdb/bolt"
 	count "github.com/jayalane/go-counter"
+	set "github.com/jayalane/go-persist-set"
 	"github.com/jayalane/go-tinyconfig"
 	"log"
 	"math/rand"
@@ -70,7 +69,7 @@ type bucketChanItem struct {
 
 // global state
 type context struct {
-	doneObjects *bolt.DB
+	doneObjects *set.SetDb
 	lastObj     uint64
 	filter      *[]string
 	bucketChan  chan bucketChanItem
@@ -471,21 +470,7 @@ func handleAccount() {
 }
 
 func main() {
-	// Bolt DB for done Objects for copy
-	var err error
-	theCtx.doneObjects, err = bolt.Open("doneObjects.db", 0600, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer theCtx.doneObjects.Close()
-	// make sure our "bucket" in BoltDB exists
-	theCtx.doneObjects.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("doneObjects"))
-		if err != nil {
-			panic(fmt.Sprintf("create bucket: %s", err))
-		}
-		return nil
-	})
+
 	// stats
 	count.InitCounters()
 
@@ -495,7 +480,7 @@ func main() {
 		return
 	}
 	// still config
-	theConfig, err = config.ReadConfig("config.txt", defaultConfig)
+	theConfig, err := config.ReadConfig("config.txt", defaultConfig)
 	log.Println("Config", theConfig)
 	if err != nil {
 		log.Println("Error opening config.txt", err.Error())
@@ -504,6 +489,10 @@ func main() {
 		}
 	}
 
+	// save objects we have copied to disk
+	if theConfig["reCopyFiles"].BoolVal {
+		theCtx.doneObjects = set.New("doneObjects")
+	}
 	// filters for delete only these things under these things
 	if len(theConfig["useDeleteAnywayFile"].StrVal) > 0 {
 		theCtx.filter, err = readWillDeleteFile(theConfig["useDeleteAnywayFile"].StrVal)
