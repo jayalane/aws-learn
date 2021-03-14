@@ -33,7 +33,11 @@ func logCountErrTag(err error, msg string, tag string) bool {
 			}
 			count.Incr("404 error")
 		} else if reqerr.StatusCode() == 403 {
+
 			fmt.Println("Got 403 error", reqerr)
+			if strings.Contains(reqerr.Message(), "The security token included in the request is expired") {
+				panic("Exiting due to AWS token expired, refresh creds")
+			}
 			is403 = true
 			if tag != "" {
 				count.Incr("403-error-" + tag)
@@ -43,6 +47,9 @@ func logCountErrTag(err error, msg string, tag string) bool {
 			fmt.Println("Got request error on", msg, err, reqerr, reqerr.OrigErr())
 			if strings.Contains(reqerr.Message(), "send request failed") {
 				time.Sleep(10 * time.Second) // slow down
+			}
+			if strings.Contains(reqerr.Message(), "ExpiredToken") {
+				panic("Exiting due to AWS token expired, refresh creds")
 			}
 		}
 	} else {
