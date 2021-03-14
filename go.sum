@@ -1,10 +1,10 @@
 github.com/aws/aws-sdk-go v1.37.30 h1:fZeVg3QuTkWE/dEvPQbK6AL32+3G9ofJfGFSPS1XLH0=
 github.com/aws/aws-sdk-go v1.37.30/go.mod h1:hcU610XS61/+aQV88ixoOzUoG7v3b31pl2zKMmprdro=
-github.com/boltdb/bolt v1.3.1 h1:JQmyP4ZBrce+ZQu0dY660FMfatumYDLun9hBCUVIkF4=
-github.com/boltdb/bolt v1.3.1/go.mod h1:clJnj/oiGkjum5o1McbSZDSLxVThjynRyGBgiAx27Ps=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/jayalane/go-counter v0.0.0-20200725010152-dee2e4c30f4f h1:8hDwCelo+xNx4lkWiY6/Sdm/5TE4pmj5fnq2bzk9GpI=
 github.com/jayalane/go-counter v0.0.0-20200725010152-dee2e4c30f4f/go.mod h1:wpSOTnt+kC7S2CZHm6cAwaIA8L3zYEMaicEXg9AnI8A=
+github.com/jayalane/go-persist-set v0.0.0-20210314025444-bbb22ea215c3 h1:FJyLTiQ+T4C3CcB0cChApOsF2pK316sOaEldrkJEuO4=
+github.com/jayalane/go-persist-set v0.0.0-20210314025444-bbb22ea215c3/go.mod h1:yWk4NgkzibYusUx5ruYG97A9fA8poQequo07AaQwwQ0=
 github.com/jayalane/go-tinyconfig v0.0.0-20190322222019-6686e8e45220 h1:Er+o6b1vEwUcersw5Tm1SPRHbKrNs6I8K1ZoTjDZ1uE=
 github.com/jayalane/go-tinyconfig v0.0.0-20190322222019-6686e8e45220/go.mod h1:To7/Wkt2vnh8ZC1mcRu0XB2Z4YCk+bRpHLdAn9DwZMw=
 github.com/jmespath/go-jmespath v0.4.0 h1:BEgLn5cpjn8UN1mAw4NjwDrS35OdebyEtFe+9YPoQUg=
