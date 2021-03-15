@@ -201,7 +201,7 @@ func handleThreeACL(
 	sess *session.Session) {
 
 	var err error
-	getACL := &s3.GetObjectAclOutput{}
+	var getACL *s3.GetObjectAclOutput
 	var svc *s3.S3
 	svc = s3.New(sess)
 	count.Incr("aws-get-object-3acl")
