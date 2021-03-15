@@ -209,7 +209,7 @@ func getCredentials(session session.Session, acctID string) *credentials.Credent
 func handleObject() {
 	count.Incr("aws-new-session-init")
 	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
-	sess := &session.Session{}
+	var sess *session.Session
 	if err != nil {
 		panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
 	}
@@ -362,7 +362,7 @@ func makeTimestamp() uint64 { // from stackoverflow
 func handleBucket() {
 	count.Incr("aws-new-session-bare-2")
 	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
-	sess := &session.Session{}
+	var sess *session.Session
 	if err != nil {
 		panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
 	}
@@ -416,7 +416,7 @@ func handleBucket() {
 func handleAccount() {
 	count.Incr("aws-new-session-bare-2")
 	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
-	sess := &session.Session{}
+	var sess *session.Session
 	if err != nil {
 		panic(fmt.Sprintf("Can't get session for master %s", err.Error()))
 	}
@@ -480,7 +480,8 @@ func main() {
 		return
 	}
 	// still config
-	theConfig, err := config.ReadConfig("config.txt", defaultConfig)
+	var err error
+	theConfig, err = config.ReadConfig("config.txt", defaultConfig)
 	log.Println("Config", theConfig)
 	if err != nil {
 		log.Println("Error opening config.txt", err.Error())
@@ -491,7 +492,7 @@ func main() {
 
 	// save objects we have copied to disk
 	if theConfig["reCopyFiles"].BoolVal {
-		theCtx.doneObjects = set.New("doneObjects")
+		theCtx.doneObjects = set.New("doneObjects_2")
 	}
 	// filters for delete only these things under these things
 	if len(theConfig["useDeleteAnywayFile"].StrVal) > 0 {
