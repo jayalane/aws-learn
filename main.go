@@ -276,6 +276,12 @@ func handleObject() {
 				theCtx.wg.Done()
 				continue
 			}
+			sb := keyName(*aws.String(b), *aws.String(k))
+			if theCtx.doneObjects.InSet(sb) {
+				count.Incr("skip-done-pre-head")
+				continue
+			}
+
 			req := &s3.HeadObjectInput{Key: aws.String(k),
 				Bucket: aws.String(b)}
 			count.Incr("aws-head-object")
@@ -305,7 +311,10 @@ func handleObject() {
 						if retry {
 							count.Incr("retry-copy-object")
 							count.Incr("retry-copy-object-" + b)
+
 							theCtx.objectChan <- kb
+							kb.wg.Add(1)     // Done in handleObject
+							theCtx.wg.Add(1) // Done in handleObject
 						}
 					}
 				} else if theConfig["oneBucketReencrypt"].BoolVal {
@@ -347,8 +356,8 @@ func handleObject() {
 			kb.wg.Done()
 			theCtx.wg.Done()
 
-		case <-time.After(60 * time.Second):
-			log.Println("Giving up on objects after 1 minute with no traffic")
+		case <-time.After(60 * time.Second * 60):
+			log.Println("Exiting object handler after 1 hour with no traffic")
 			return
 		}
 	}
@@ -402,11 +411,12 @@ func handleBucket() {
 					runtime.Gosched()
 					theCtx.objectChan <- objectChanItem{b.acctID, b.bucket, key, wg}
 				}
+				count.Incr("object-page-exit")
 				return true
 			})
 			theCtx.wg.Done()
 		case <-time.After(60 * time.Second):
-			log.Println("Giving up on buckets after 1 minute with no traffic")
+			log.Println("Giving up on bucket channel after 1 minute with no traffic")
 			return
 		}
 	}
@@ -581,8 +591,8 @@ func main() {
 	//     this needs to wait a bit because the WG can empty when an object list page is fully processed
 	//     and the work per object is very small
 	for makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj) < 10*1000 {
-		log.Println("Last activity sleeping 10 seconds", makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj))
-		time.Sleep(30 * time.Second)
+		log.Println("Last activity sleeping 30 seconds", makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj))
+		time.Sleep(60 * 60 * time.Second)
 		log.Println("Now waiting")
 		theCtx.wg.Wait()
 	}
