@@ -290,6 +290,12 @@ func handleObject() {
 				logCountErrTag(err, "bucket/object"+k+"/"+b, b)
 			} else { // head succeeded
 				tooBig := false
+				etag := head.ETag
+				if *head.ReplicationStatus == "COMPLETED" {
+					count.Incr("object-replication-completed")
+				} else {
+					count.Incr("object-replication-not-completed")
+				}
 				if head.ContentLength != nil {
 					count.IncrDelta("object-length", *head.ContentLength)
 					count.IncrDelta("object-length-"+b, *head.ContentLength)
@@ -299,6 +305,9 @@ func handleObject() {
 						count.Incr("big-object-" + b)
 						tooBig = true
 					}
+				}
+				if theConfig["checkEtag"].BoolVal {
+					fmt.Println("Checking etag", b, k, etag)
 				}
 				if theConfig["reCopyFiles"].BoolVal {
 					count.Incr("copy-start")
