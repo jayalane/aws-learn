@@ -291,10 +291,15 @@ func handleObject() {
 			} else { // head succeeded
 				tooBig := false
 				etag := head.ETag
-				if *head.ReplicationStatus == "COMPLETED" {
+				if head.ReplicationStatus == nil {
+					count.Incr("object-replication-empty")
+					fmt.Println("Replication empty " + k + "/" + b)
+				} else if *head.ReplicationStatus == "COMPLETED" {
 					count.Incr("object-replication-completed")
 				} else {
 					count.Incr("object-replication-not-completed")
+					count.Incr("object-replication-status-" + *head.ReplicationStatus)
+					fmt.Println("Replication status " + k + "/" + b + *head.ReplicationStatus)
 				}
 				if head.ContentLength != nil {
 					count.IncrDelta("object-length", *head.ContentLength)
