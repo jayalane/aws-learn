@@ -22,6 +22,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,8 @@ var defaultConfig = `#
 oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
+checkReplica = false
+checkEtag = false
 reCopyFile = false
 setToDangerToReCopy = asdfasd
 checkAcl = false
@@ -88,6 +91,13 @@ type context struct {
 var theCtx context
 
 // first a few utilities
+
+// given a bucket, replace us-east-1 with us-west-2
+func getReplicaBucket(b string) string {
+	// todo
+
+	return strings.Replace(b, "us-east-1", "us-west-2", -1)
+}
 
 // given an account, gets a session
 func getSessForAcct(a string) *session.Session {
@@ -260,6 +270,7 @@ func handleObject() {
 				theCtx.wg.Done()
 				continue
 			}
+			// not just list files
 			if theConfig["checkAcl"].BoolVal {
 				count.Incr("handle-acl")
 				count.Incr("handle-acl-" + b)
@@ -281,7 +292,6 @@ func handleObject() {
 				count.Incr("skip-done-pre-head")
 				continue
 			}
-
 			req := &s3.HeadObjectInput{Key: aws.String(k),
 				Bucket: aws.String(b)}
 			count.Incr("aws-head-object")
@@ -289,8 +299,10 @@ func handleObject() {
 			if err != nil {
 				logCountErrTag(err, "bucket/object"+k+"/"+b, b)
 			} else { // head succeeded
+				// needed for recopy, re-encrypt, and checkEtag
 				tooBig := false
 				etag := head.ETag
+				// while we are here, check repl status
 				if head.ReplicationStatus == nil {
 					count.Incr("object-replication-empty")
 					fmt.Println("Replication empty " + k + "/" + b)
@@ -311,8 +323,28 @@ func handleObject() {
 						tooBig = true
 					}
 				}
+				if theConfig["checkReplica"].BoolVal {
+					continue
+				}
 				if theConfig["checkEtag"].BoolVal {
-					fmt.Println("Checking etag", b, k, etag)
+					// fmt.Println("Checking etag", b, k, etag)
+					// another head to another bucket
+					b2 := getReplicaBucket(b)
+					req := &s3.HeadObjectInput{Key: aws.String(k),
+						Bucket: aws.String(b2)}
+					fmt.Println("About to call head", req)
+					count.Incr("aws-head-object-etag-repl")
+					head, err := svc.HeadObject(req)
+					if err != nil {
+						logCountErrTag(err, "bucket/object"+k+"/"+b2, b2)
+					} else { // head succeeded
+						replEtag := head.ETag
+						if replEtag == etag {
+							continue
+						}
+						fmt.Print("Object out of sync", k+"/"+b+"/"+b2)
+					}
+					continue
 				}
 				if theConfig["reCopyFiles"].BoolVal {
 					count.Incr("copy-start")
@@ -515,7 +547,7 @@ func main() {
 	}
 
 	// save objects we have copied to disk
-	if theConfig["reCopyFiles"].BoolVal {
+	if theConfig["reCopyFiles"].BoolVal || theConfig["checkEtag"].BoolVal || theConfig["checkReplica"].BoolVal {
 		theCtx.doneObjects = set.New("doneObjects_2")
 	}
 	// filters for delete only these things under these things
