@@ -30,6 +30,7 @@ import (
 
 var theConfig config.Config
 var defaultConfig = `#
+logAllObjects = false
 oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
@@ -246,14 +247,16 @@ func handleObject() {
 			count.Incr("total-object-" + b)
 			if theConfig["justListFiles"].BoolVal {
 				if filterObjectPasses(b, k, theCtx.filter) {
-					//fmt.Printf(
-					//	"Found match s3://%s/%s\n",
-					//	b,
-					//	k)
+					if theConfig["logAllObjects"].BoolVal == true {
+						fmt.Printf(
+							"Found match s3://%s/%s\n",
+							b,
+							k)
+					}
 					count.IncrDelta("list-found", 1)
 					count.IncrDelta("list-found-"+b, 1)
 					if theConfig["setToDangerToDeleteMatching"].StrVal == "danger" {
-						fmt.Println("Going to delete", k)
+						// fmt.Println("Going to delete", k)
 						_, err = deleteObject(k, b, sess)
 						if err != nil {
 							fmt.Println("Error deleting", k, b, err.Error())
@@ -506,6 +509,7 @@ func handleAccount() {
 				log.Println("Can't list buckets!", err)
 			}
 			for _, b := range result.Buckets {
+				log.Println("Got a bucket", aws.StringValue(b.Name))
 				if theConfig["oneBucket"].BoolVal == false || theConfig["oneBucketName"].StrVal == aws.StringValue(b.Name) {
 					theCtx.wg.Add(1) // done in handleBucket
 					log.Println("Got a bucket", aws.StringValue(b.Name))
@@ -637,8 +641,8 @@ func main() {
 	//     this needs to wait a bit because the WG can empty when an object list page is fully processed
 	//     and the work per object is very small
 	for makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj) < 10*1000 {
-		log.Println("Last activity sleeping 30 seconds", makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj))
-		time.Sleep(60 * 60 * time.Second)
+		log.Println("Last activity sleeping 60 seconds", makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj))
+		time.Sleep(60 * time.Second)
 		log.Println("Now waiting")
 		theCtx.wg.Wait()
 	}
