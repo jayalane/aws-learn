@@ -37,9 +37,8 @@ func fixACL(
 	newACL := s3.AccessControlPolicy{}
 	newACL.Owner = acl.Owner
 
-	for _, g := range acl.Grants {
-		newACL.Grants = append(newACL.Grants, g)
-	}
+	newACL.Grants = append(newACL.Grants, acl.Grants...)
+
 	newG := s3.Grant{}
 	newGrantee := s3.Grantee{}
 	newGrantee.ID = &canonID // thank god it's not c
@@ -119,7 +118,7 @@ func handleACL(
 	sess *session.Session) {
 	tryAgain := 0
 	var err error
-	getACL := &s3.GetObjectAclOutput{}
+	var getACL *s3.GetObjectAclOutput
 	var svc *s3.S3
 	for {
 		if tryAgain > 0 {
@@ -144,8 +143,6 @@ func handleACL(
 			if tryAgain == 2 {
 				fmt.Println("Try again failed - check aclOwnerAcct config.txt setting", bucket, obj, err)
 				return
-			} else if tryAgain == 1 {
-
 			}
 			if is403 {
 				tryAgain = tryAgain + 1
@@ -202,8 +199,7 @@ func handleThreeACL(
 
 	var err error
 	var getACL *s3.GetObjectAclOutput
-	var svc *s3.S3
-	svc = s3.New(sess)
+	var svc *s3.S3 = s3.New(sess)
 	count.Incr("aws-get-object-3acl")
 
 	getACL, err = svc.GetObjectAcl(&s3.GetObjectAclInput{

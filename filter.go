@@ -33,6 +33,11 @@ func readWillDeleteFile(filename string) (*[]string, error) {
 	defer file.Close()
 	fileReader := bufio.NewReader(file)
 	err = addWillDeleteListFromReader(fileReader, &filter)
+	if err != nil {
+		fmt.Println("Warning: can't use will delete file, using what was parsed,",
+			filename, filePath, err.Error())
+		return &filter, err
+	}
 	return &filter, nil
 }
 
