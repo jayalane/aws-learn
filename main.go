@@ -79,7 +79,6 @@ type context struct {
 	bucketChan  chan bucketChanItem
 	objectChan  chan objectChanItem
 	accountChan chan string
-	done        chan int
 	credsRW     sync.RWMutex
 	creds       map[string]*credentials.Credentials
 	wg          *sync.WaitGroup
@@ -509,8 +508,8 @@ func handleAccount() {
 				log.Println("Can't list buckets!", err)
 			}
 			for _, b := range result.Buckets {
-				log.Println("Got a bucket", aws.StringValue(b.Name))
-				if theConfig["oneBucket"].BoolVal == false || theConfig["oneBucketName"].StrVal == aws.StringValue(b.Name) {
+			log.Println("Got a bucket", aws.StringValue(b.Name))
+			if !theConfig["oneBucket"].BoolVal || theConfig["oneBucketName"].StrVal == aws.StringValue(b.Name) {
 					theCtx.wg.Add(1) // done in handleBucket
 					log.Println("Got a bucket", aws.StringValue(b.Name))
 					theCtx.bucketChan <- bucketChanItem{a, *b.Name}
