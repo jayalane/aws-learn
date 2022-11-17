@@ -168,7 +168,7 @@ func getDefaultKey(b *string, svc *s3.S3) (string, error) {
 			}
 		} else {
 			if netErr, ok := err.(net.Error); ok {
-				log.Println("Error is type", reflect.TypeOf(netErr.Temporary()))
+				log.Println("Error is type", reflect.TypeOf(netErr.Timeout()))
 				log.Println("Got net error on bucket", b, netErr)
 			} else {
 				log.Println("Got error on object", b, err)
@@ -246,7 +246,7 @@ func handleObject() {
 			count.Incr("total-object-" + b)
 			if theConfig["justListFiles"].BoolVal {
 				if filterObjectPasses(b, k, theCtx.filter) {
-					if theConfig["logAllObjects"].BoolVal == true {
+					if theConfig["logAllObjects"].BoolVal {
 						fmt.Printf(
 							"Found match s3://%s/%s\n",
 							b,

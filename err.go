@@ -54,7 +54,7 @@ func logCountErrTag(err error, msg string, tag string) bool {
 		}
 	} else {
 		if netErr, ok := err.(net.Error); ok {
-			fmt.Println("Error is type", reflect.TypeOf(netErr.Temporary()))
+			fmt.Println("Error is type", reflect.TypeOf(netErr.Timeout()))
 			fmt.Println("Got net error on ", msg, netErr)
 		} else {
 			fmt.Println("Got error on ", msg, err)
