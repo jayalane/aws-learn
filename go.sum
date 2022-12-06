@@ -1,9 +1,9 @@
-github.com/aws/aws-sdk-go v1.44.139 h1:Mj/OZBy9RTbzJ8pfgK6rOL8xgUEAIn8pfIN6qWFtpAk=
-github.com/aws/aws-sdk-go v1.44.139/go.mod h1:aVsgQcEevwlmQ7qHE9I3h+dtQgpqhFB+i8Phjh7fkwI=
+github.com/aws/aws-sdk-go v1.44.153 h1:KfN5URb9O/Fk48xHrAinrPV2DzPcLa0cd9yo1ax5KGg=
+github.com/aws/aws-sdk-go v1.44.153/go.mod h1:aVsgQcEevwlmQ7qHE9I3h+dtQgpqhFB+i8Phjh7fkwI=
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/jayalane/go-counter v0.0.0-20221117172411-fec5dac622ff h1:99OyBSbqfo0J6D0K3WfVFwU2FZBMhHvEtOLuDdgNhEA=
-github.com/jayalane/go-counter v0.0.0-20221117172411-fec5dac622ff/go.mod h1:5aB/oAS8LjJOvOookAs35ZvcYoPkx14TkHq2Fi0MyQQ=
+github.com/jayalane/go-counter v0.0.0-20221206021103-daad75b2de86 h1:q+tY3fdbA8bPVaKvs0nHDJE7oc95lHtA+GUBKafAtGo=
+github.com/jayalane/go-counter v0.0.0-20221206021103-daad75b2de86/go.mod h1:5aB/oAS8LjJOvOookAs35ZvcYoPkx14TkHq2Fi0MyQQ=
 github.com/jayalane/go-persist-set v0.0.0-20210317172002-5f24b27445b3 h1:EhM8ap66o1hswySEkwX5usHh/30OVvyElLLAhc3793s=
 github.com/jayalane/go-persist-set v0.0.0-20210317172002-5f24b27445b3/go.mod h1:yWk4NgkzibYusUx5ruYG97A9fA8poQequo07AaQwwQ0=
 github.com/jayalane/go-tinyconfig v0.0.0-20221117172320-01f26dc93835 h1:ZiSlYTkDtMILQ91wohsqn4axpLfpP3uXs8rEtdrXG80=
