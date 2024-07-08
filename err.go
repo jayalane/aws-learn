@@ -3,63 +3,77 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	count "github.com/jayalane/go-counter"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	count "github.com/jayalane/go-counter"
 )
 
-// func logCountErr checks aws error and logs and registers stats
-func logCountErr(err error, msg string) bool {
-
+// logCountErr checks aws error and logs and registers stats.
+func logCountErr(err error, msg string) bool { //nolint:unparam
 	return logCountErrTag(err, msg, "")
-
 }
 
-// func logCountErr checks aws error and logs and registers stats
-func logCountErrTag(err error, msg string, tag string) bool {
-
+// logCountErrTag checks aws error and logs and registers stats.
+func logCountErrTag(err error, msg string, tag string) bool { //nolint:cyclop
 	fmt.Println("Got error on ", msg, err, tag)
+
 	is403 := false
 
-	if reqerr, ok := err.(awserr.RequestFailure); ok {
+	var reqerr awserr.RequestFailure
+
+	if errors.As(err, &reqerr) { //nolint:nestif
 		fmt.Println("Got err", reqerr)
-		if reqerr.StatusCode() == 404 {
+
+		switch {
+		case reqerr.StatusCode() == http.StatusNotFound:
 			if tag != "" {
 				count.Incr("404-error-" + tag)
 			}
-			count.Incr("404 error")
-		} else if reqerr.StatusCode() == 403 {
 
+			count.Incr("404 error")
+		case reqerr.StatusCode() == http.StatusForbidden:
 			fmt.Println("Got 403 error", reqerr)
-			if strings.Contains(reqerr.Message(), "The security token included in the request is expired") {
+
+			if strings.Contains(reqerr.Message(),
+				"The security token included in the request is expired") {
 				panic("Exiting due to AWS token expired, refresh creds")
 			}
+
 			is403 = true
+
 			if tag != "" {
 				count.Incr("403-error-" + tag)
 			}
+
 			count.Incr("403 error")
-		} else {
+		default:
 			fmt.Println("Got request error on", msg, err, reqerr, reqerr.OrigErr())
+
 			if strings.Contains(reqerr.Message(), "send request failed") {
-				time.Sleep(10 * time.Second) // slow down
+				time.Sleep(sendSlowDownSeconds * time.Second) // slow down
 			}
+
 			if strings.Contains(reqerr.Message(), "ExpiredToken") {
 				panic("Exiting due to AWS token expired, refresh creds")
 			}
 		}
 	} else {
-		if netErr, ok := err.(net.Error); ok {
+		var netErr net.Error
+
+		if errors.As(err, &netErr) {
 			fmt.Println("Error is type", reflect.TypeOf(netErr.Timeout()))
 			fmt.Println("Got net error on ", msg, netErr)
 		} else {
 			fmt.Println("Got error on ", msg, err)
 		}
 	}
-	return is403
 
+	return is403
 }

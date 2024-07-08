@@ -1,12 +1,12 @@
 module github.com/jayalane/aws-learn
 
-go 1.20
+go 1.22.5
 
 require (
-	github.com/aws/aws-sdk-go v1.44.244
-	github.com/jayalane/go-counter v0.0.0-20230414213148-6fc956fb54b6
-	github.com/jayalane/go-persist-set v0.0.0-20230408010108-c643c5d72db3
-	github.com/jayalane/go-tinyconfig v0.0.0-20230406214908-d011322222a8
+	github.com/aws/aws-sdk-go v1.54.16
+	github.com/jayalane/go-counter v0.0.0-20240705210921-ef55ebe2f756
+	github.com/jayalane/go-persist-set v1.0.0
+	github.com/jayalane/go-tinyconfig v0.0.0-20240705214247-5466406a70c3
 )
 
 require github.com/jmespath/go-jmespath v0.4.0 // indirect
