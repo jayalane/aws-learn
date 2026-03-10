@@ -72,9 +72,10 @@ func copyOnce(source string,
 						time.Sleep(time.Duration(n*delayBaseMsecs) * time.Millisecond)
 
 						continue
-					} else {
-						return nil, err
 					}
+
+					return nil, err
+
 				default:
 					fmt.Println(aerr.Error())
 				}

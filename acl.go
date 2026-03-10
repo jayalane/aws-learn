@@ -237,6 +237,55 @@ func handleACL( //nolint:cyclop
 	}
 }
 
+// fixAndVerifyThreeACL applies the ACL fix for a single account and re-fetches to verify.
+// Returns false if PutObjectAcl fails (caller should stop processing).
+func fixAndVerifyThreeACL(
+	svc *s3.S3,
+	getACL *s3.GetObjectAclOutput,
+	bucket string,
+	obj string,
+	readAcct string,
+) (*s3.GetObjectAclOutput, bool) {
+	newACL, err := fixACL(*getACL, bucket, obj, readAcct)
+
+	fmt.Println("NewACL/OldACL", *getACL, newACL)
+
+	if err != nil {
+		logCountErr(err, "Get new ACL failed"+bucket+"/"+obj)
+
+		return getACL, true // continue to next account
+	}
+
+	count.Incr("aws-put-object-3acl")
+
+	_, err = svc.PutObjectAcl(&s3.PutObjectAclInput{
+		AccessControlPolicy: &newACL,
+		Bucket:              aws.String(bucket),
+		Key:                 aws.String(obj),
+	})
+	if err != nil {
+		logCountErr(err, "PutObjectAcl failed"+bucket+"/"+obj)
+
+		return getACL, false // stop processing
+	}
+
+	fmt.Println("Successfully fixed", readAcct, bucket, obj)
+
+	refreshed, err := svc.GetObjectAcl(&s3.GetObjectAclInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(obj),
+	})
+	if refreshed != nil {
+		fmt.Println("refetched acl", obj, *refreshed)
+
+		return refreshed, true
+	}
+
+	fmt.Println("refetched acl err", err)
+
+	return getACL, true
+}
+
 // handleThreeAcl does all the logic for Acl get/set
 // no error - it will print out any errors.
 func handleThreeACL(
@@ -245,66 +294,39 @@ func handleThreeACL(
 	_ string,
 	sess *session.Session,
 ) {
-	var err error
-
-	var getACL *s3.GetObjectAclOutput
-
 	svc := s3.New(sess)
 
 	count.Incr("aws-get-object-3acl")
 
-	getACL, err = svc.GetObjectAcl(&s3.GetObjectAclInput{
+	getACL, err := svc.GetObjectAcl(&s3.GetObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(obj),
 	})
-	if err != nil {
-		_ = logCountErrTag(err, "GetObjectAcl failed"+bucket+"/"+obj, bucket)
+	if err != nil || getACL == nil {
+		_ = logCountErrTag(err, "GetObjectAcl failed: "+bucket+"/"+obj, bucket)
 
-		return // already logged
+		return
 	}
 
-	for _, readAcct := range strings.Split((theConfig)["threeAcctAclReader"].StrVal, ",") {
-		doIt := checkThreeACL(*getACL, bucket, obj, readAcct)
-		if doIt {
-			fmt.Println("ERROR: Got result", doIt, bucket, obj, *getACL)
-			count.Incr("bad-3acl-found")
+	shouldFix := theConfig["setToDangerToForceACL"].StrVal == danger
+
+	for _, readAcct := range strings.Split(theConfig["threeAcctAclReader"].StrVal, ",") {
+		if !checkThreeACL(*getACL, bucket, obj, readAcct) {
+			continue
 		}
 
-		if doIt && theConfig["setToDangerToForceACL"].StrVal == danger {
-			newACL, err := fixACL(*getACL, bucket, obj, readAcct)
+		fmt.Println("ERROR: Got result", true, bucket, obj, *getACL)
+		count.Incr("bad-3acl-found")
 
-			fmt.Println("NewACL/OldACL", *getACL, newACL)
+		if !shouldFix {
+			continue
+		}
 
-			if err != nil {
-				logCountErr(err, "Get new ACL failed"+bucket+"/"+obj)
+		var ok bool
 
-				continue
-			}
-
-			count.Incr("aws-put-object-3acl")
-
-			_, err = svc.PutObjectAcl(&s3.PutObjectAclInput{
-				AccessControlPolicy: &newACL,
-				Bucket:              aws.String(bucket),
-				Key:                 aws.String(obj),
-			})
-			if err != nil {
-				logCountErr(err, "PutObjectAcl failed"+bucket+"/"+obj)
-
-				return
-			}
-
-			fmt.Println("Successfully fixed", readAcct, bucket, obj)
-
-			getACL, err = svc.GetObjectAcl(&s3.GetObjectAclInput{
-				Bucket: aws.String(bucket),
-				Key:    aws.String(obj),
-			})
-			if getACL != nil {
-				fmt.Println("refetched acl", obj, *getACL)
-			} else {
-				fmt.Println("refetched acl err", err)
-			}
+		getACL, ok = fixAndVerifyThreeACL(svc, getACL, bucket, obj, readAcct)
+		if !ok {
+			return
 		}
 	}
 }

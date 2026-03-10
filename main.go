@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/organizations"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	count "github.com/jayalane/go-counter"
 	set "github.com/jayalane/go-persist-set"
 	config "github.com/jayalane/go-tinyconfig"
@@ -32,7 +33,9 @@ import (
 var (
 	theConfig     config.Config
 	defaultConfig = `#
-logAllObjects = false
+logAllObjects = true
+awsRegion = us-east-1
+awsReplicationRegion = us-west-2
 oneBucket = false
 oneBucketName = bucket_name
 oneBucketReencrypt = false
@@ -85,7 +88,7 @@ type bucketChanItem struct {
 // context holds the global state.
 type context struct {
 	doneObjects *set.DB
-	lastObj     uint64
+	lastObj     int64
 	filter      *[]string
 	bucketChan  chan bucketChanItem
 	objectChan  chan objectChanItem
@@ -105,13 +108,13 @@ var theCtx context
 
 // getReplicaBucket given a bucket, replace us-east-1 with us-west-2.
 func getReplicaBucket(b string) string {
-	return strings.ReplaceAll(b, "us-east-1", "us-west-2")
+	return strings.ReplaceAll(b, theConfig["awsRegion"].StrVal, theConfig["awsReplicationRegion"].StrVal)
 }
 
 // given an account, gets a session.
 func getSessForAcct(a string) *session.Session {
 	if a == "0" {
-		initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+		initSess, err := session.NewSession(&aws.Config{Region: aws.String(theConfig["awsRegion"].StrVal)})
 		if err != nil {
 			panic("Can't get session for master" + err.Error())
 		}
@@ -127,7 +130,7 @@ func getSessForAcct(a string) *session.Session {
 	var ok bool
 
 	if creds, ok = theCtx.creds[a]; !ok {
-		initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+		initSess, err := session.NewSession(&aws.Config{Region: aws.String(theConfig["awsRegion"].StrVal)})
 
 		count.Incr("aws-newsession-root")
 
@@ -141,7 +144,7 @@ func getSessForAcct(a string) *session.Session {
 	count.Incr("aws-newsession-acct")
 
 	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String("us-east-1"),
+		Region:      aws.String(theConfig["awsRegion"].StrVal),
 		Credentials: creds,
 	})
 	if err != nil {
@@ -264,7 +267,7 @@ func getCredentials(session session.Session, acctID string) *credentials.Credent
 func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 	count.Incr("aws-new-session-init")
 
-	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	initSess, err := session.NewSession(&aws.Config{Region: aws.String(theConfig["awsRegion"].StrVal)})
 
 	var sess *session.Session
 
@@ -299,13 +302,13 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 
 			if theConfig["justListFiles"].BoolVal { //nolint:nestif
 				if filterObjectPasses(b, k, theCtx.filter) {
+
 					if theConfig["logAllObjects"].BoolVal {
 						fmt.Printf(
 							"Found match s3://%s/%s\n",
 							b,
 							k)
 					}
-
 					count.IncrDelta("list-found", 1)
 					count.IncrDelta("list-found-"+b, 1)
 
@@ -506,15 +509,15 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 	}
 }
 
-func makeTimestamp() uint64 { // from stackoverflow
-	return uint64(time.Now().UnixNano()) / uint64(time.Millisecond)
+func makeTimestamp() int64 { // from stackoverflow
+	return time.Now().UnixNano() / int64(time.Millisecond)
 }
 
 // go routine to get buckets and list their objects.
-func handleBucket() {
+func handleBucket() { //nolint:cyclop
 	count.Incr("aws-new-session-bare-2")
 
-	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	initSess, err := session.NewSession(&aws.Config{Region: aws.String(theConfig["awsRegion"].StrVal)})
 
 	var sess *session.Session
 
@@ -525,7 +528,7 @@ func handleBucket() {
 	for {
 		select {
 		case b := <-theCtx.bucketChan:
-			atomic.StoreUint64(&theCtx.lastObj, makeTimestamp())
+			atomic.StoreInt64(&theCtx.lastObj, makeTimestamp())
 			log.Println("Got a bucket", b.bucket)
 
 			if b.acctID == "0" {
@@ -541,6 +544,21 @@ func handleBucket() {
 			}
 
 			count.Incr("total-bucket")
+
+			region, err := s3manager.GetBucketRegion(aws.BackgroundContext(), sess, b.bucket, theConfig["awsRegion"].StrVal)
+			if err != nil {
+				log.Println("Can't determine region for bucket", b.bucket, err)
+			}
+
+			if region != "" && region != theConfig["awsRegion"].StrVal {
+				sess, err = session.NewSession(sess.Config.Copy(&aws.Config{Region: aws.String(region)}))
+				if err != nil {
+					log.Println("Can't create session for region", region, b.bucket, err)
+					theCtx.wg.Done()
+
+					continue
+				}
+			}
 
 			svc := s3.New(sess)
 			// get default key
@@ -588,7 +606,7 @@ func handleBucket() {
 func handleAccount() { //nolint:cyclop
 	count.Incr("aws-new-session-bare-2")
 
-	initSess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	initSess, err := session.NewSession(&aws.Config{Region: aws.String(theConfig["awsRegion"].StrVal)})
 
 	var sess *session.Session
 
@@ -618,7 +636,7 @@ func handleAccount() { //nolint:cyclop
 				count.Incr("aws-new-session-creds-2")
 
 				sess, err = session.NewSession(&aws.Config{
-					Region:      aws.String("us-east-1"),
+					Region:      aws.String(theConfig["awsRegion"].StrVal),
 					Credentials: creds,
 				})
 				if err != nil {
@@ -640,24 +658,29 @@ func handleAccount() { //nolint:cyclop
 				log.Println("Can't list buckets!", err)
 			}
 
-			for _, b := range result.Buckets {
-				log.Println("Got a bucket", aws.StringValue(b.Name))
-
-				if !theConfig["oneBucket"].BoolVal || theConfig["oneBucketName"].StrVal == aws.StringValue(b.Name) {
-					theCtx.wg.Add(1) // done in handleBucket
+			if result == nil {
+				log.Println("Can't list buckets!")
+			} else {
+				for _, b := range result.Buckets {
 					log.Println("Got a bucket", aws.StringValue(b.Name))
 
-					theCtx.bucketChan <- bucketChanItem{a, *b.Name}
+					if !theConfig["oneBucket"].BoolVal || theConfig["oneBucketName"].StrVal == aws.StringValue(b.Name) {
+						theCtx.wg.Add(1) // done in handleBucket
+						log.Println("Got a bucket", aws.StringValue(b.Name))
 
-					gotOne = true
+						theCtx.bucketChan <- bucketChanItem{a, *b.Name}
+
+						gotOne = true
+					}
+				}
+
+				if !gotOne {
+					log.Println("Processing for buckets done with no buckets seen for", a)
 				}
 			}
 
-			if !gotOne {
-				log.Println("Processing for buckets done with no buckets seen for", a)
-			}
-
 			theCtx.wg.Done() // Add(1) in main
+
 		case <-time.After(time.Minute):
 			log.Println("Giving up on buckets after 1 minute with no traffic")
 
@@ -715,7 +738,7 @@ func main() { //nolint:gocognit,cyclop
 	}
 
 	// init the globals
-	atomic.StoreUint64(&theCtx.lastObj, makeTimestamp())
+	atomic.StoreInt64(&theCtx.lastObj, makeTimestamp())
 
 	theCtx.wg = new(sync.WaitGroup)
 	theCtx.accountChan = make(chan string, smallChannelBuffer)
@@ -741,7 +764,7 @@ func main() { //nolint:gocognit,cyclop
 
 	// now the work
 	// log into master account
-	sess, err := session.NewSession(&aws.Config{Region: aws.String("us-east-1")})
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(theConfig["awsRegion"].StrVal)})
 	if err != nil {
 		panic(fmt.Sprintf("Can't log into AWS! %s", err))
 	}
@@ -801,13 +824,13 @@ func main() { //nolint:gocognit,cyclop
 	// waiting till done -
 	//     this needs to wait a bit because the WG can empty when an object list page is fully processed
 	//     and the work per object is very small.
-	for makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj) < 10*1000 {
-		log.Println("Last activity sleeping 60 seconds", makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj))
+	for makeTimestamp()-atomic.LoadInt64(&theCtx.lastObj) < 10*1000 {
+		log.Println("Last activity sleeping 60 seconds", makeTimestamp()-atomic.LoadInt64(&theCtx.lastObj))
 		time.Sleep(time.Minute)
 		log.Println("Now waiting")
 		theCtx.wg.Wait()
 	}
 
 	count.LogCounters()
-	log.Println("Exiting", makeTimestamp()-atomic.LoadUint64(&theCtx.lastObj))
+	log.Println("Exiting", makeTimestamp()-atomic.LoadInt64(&theCtx.lastObj))
 }
