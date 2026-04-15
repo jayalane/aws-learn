@@ -46,6 +46,11 @@ setToDangerToReCopy = asdfasd
 checkAcl = false
 aclOwnerAcct = true
 checkOrgAccounts = true
+countNulls = false
+nullCheckFieldIndex = 22
+nullCheckFieldName = Field_23
+checkStraySlashes = false
+slashCheckHasHeader = true
 listFilesMatchingSuffix = %%%/
 listFilesMatchingPrefix = %%%
 listFilesMatchingExclude = %%%
@@ -55,6 +60,7 @@ setToDangerToReencrypt = no
 reencryptToTargetBucket = 
 setToDangerToDeleteMatching = no
 setToDangerToForceACL = no
+readOnly = safe
 numAccountHandlers = 1
 numBucketHandlers = 10
 numObjectHandlers = 1000
@@ -76,6 +82,7 @@ type objectChanItem struct {
 	acctID string
 	bucket string
 	object string
+	region string
 	wg     *sync.WaitGroup
 }
 
@@ -293,6 +300,18 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 				}
 			}
 
+			// Use the bucket's region if it differs from default
+			if kb.region != "" && kb.region != theConfig["awsRegion"].StrVal {
+				sess, err = session.NewSession(sess.Config.Copy(&aws.Config{Region: aws.String(kb.region)}))
+				if err != nil {
+					log.Println("Can't create session for region", kb.region, kb.bucket, err)
+					kb.wg.Done()
+					theCtx.wg.Done()
+
+					continue
+				}
+			}
+
 			svc := s3.New(sess)
 			k := kb.object
 			b := kb.bucket
@@ -300,23 +319,75 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 			count.Incr("total-object")
 			count.Incr("total-object-" + b)
 
+			// Always log object if configured
+			if theConfig["logAllObjects"].BoolVal {
+				fmt.Printf("Object s3://%s/%s\n", b, k)
+			}
+
+			// Always HeadObject for metadata tracking
+			req := &s3.HeadObjectInput{
+				Key:    aws.String(k),
+				Bucket: aws.String(b),
+			}
+
+			count.Incr("aws-head-object")
+
+			head, headErr := svc.HeadObject(req)
+			tooBig := false
+
+			var etag *string
+
+			if headErr != nil {
+				logCountErrTag(headErr, "bucket/object"+k+"/"+b, b)
+			} else {
+				etag = head.ETag
+
+				if head.ContentLength != nil {
+					count.IncrDelta("object-length", *head.ContentLength)
+					count.IncrDelta("object-length-"+b, *head.ContentLength)
+
+					if *head.ContentLength > maxContentLength {
+						fmt.Println("Big object", b, k)
+						count.Incr("big-object")
+						count.Incr("big-object-" + b)
+
+						tooBig = true
+					}
+				}
+
+				// Replication status
+				switch {
+				case head.ReplicationStatus == nil:
+					count.Incr("object-replication-empty")
+					fmt.Println("Replication empty " + k + "/" + b)
+				case *head.ReplicationStatus == "COMPLETED":
+					count.Incr("object-replication-completed")
+				default:
+					count.Incr("object-replication-not-completed")
+					count.Incr("object-replication-status-" + *head.ReplicationStatus)
+					fmt.Println("Replication status " + k + "/" + b + *head.ReplicationStatus)
+				}
+			}
+
+			// Mode: justListFiles (works even if HeadObject failed)
 			if theConfig["justListFiles"].BoolVal { //nolint:nestif
 				if filterObjectPasses(b, k, theCtx.filter) {
-
 					if theConfig["logAllObjects"].BoolVal {
 						fmt.Printf(
 							"Found match s3://%s/%s\n",
 							b,
 							k)
 					}
+
 					count.IncrDelta("list-found", 1)
 					count.IncrDelta("list-found-"+b, 1)
 
-					if theConfig["setToDangerToDeleteMatching"].StrVal == danger {
+					if theConfig["readOnly"].StrVal == danger &&
+						theConfig["setToDangerToDeleteMatching"].StrVal == danger {
 						// fmt.Println("Going to delete", k)
-						_, err = deleteObject(k, b, sess)
-						if err != nil {
-							fmt.Println("Error deleting", k, b, err.Error())
+						_, delErr := deleteObject(k, b, sess)
+						if delErr != nil {
+							fmt.Println("Error deleting", k, b, delErr.Error())
 						}
 
 						count.IncrDelta("list-deleted", 1)
@@ -328,6 +399,31 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 					count.IncrDelta("list-skipping-"+b, 1)
 				}
 
+				kb.wg.Done()
+				theCtx.wg.Done()
+
+				continue
+			}
+
+			if theConfig["countNulls"].BoolVal {
+				count.Incr("handle-null-count")
+				count.Incr("handle-null-count-" + b)
+				streamAndCountNulls(b, k,
+					theConfig["nullCheckFieldIndex"].IntVal,
+					theConfig["nullCheckFieldName"].StrVal,
+					sess)
+				kb.wg.Done()
+				theCtx.wg.Done()
+
+				continue
+			}
+
+			if theConfig["checkStraySlashes"].BoolVal {
+				count.Incr("handle-slash-check")
+				count.Incr("handle-slash-check-" + b)
+				streamAndCheckSlashes(b, k,
+					theConfig["slashCheckHasHeader"].BoolVal,
+					sess)
 				kb.wg.Done()
 				theCtx.wg.Done()
 
@@ -355,6 +451,15 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 				continue
 			}
 
+			// Remaining modes require HeadObject data
+			if headErr != nil {
+				kb.wg.Done()
+				theCtx.wg.Done()
+
+				continue
+			}
+
+			// Dedup check (for reencrypt/recopy retries)
 			sb := keyName(*aws.String(b), *aws.String(k))
 			if theCtx.doneObjects.InSet(sb) {
 				count.Incr("skip-done-pre-head")
@@ -362,50 +467,10 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 				continue
 			}
 
-			req := &s3.HeadObjectInput{
-				Key:    aws.String(k),
-				Bucket: aws.String(b),
-			}
-
-			count.Incr("aws-head-object")
-
-			head, err := svc.HeadObject(req)
-			if err != nil { //nolint:nestif
-				logCountErrTag(err, "bucket/object"+k+"/"+b, b)
-
-				continue
-			}
-			// needed for recopy, re-encrypt, and checkEtag
-			tooBig := false
-			etag := head.ETag
-
-			// while we are here, check repl status
-			switch {
-			case head.ReplicationStatus == nil:
-				count.Incr("object-replication-empty")
-				fmt.Println("Replication empty " + k + "/" + b)
-			case *head.ReplicationStatus == "COMPLETED":
-				count.Incr("object-replication-completed")
-			default:
-				count.Incr("object-replication-not-completed")
-				count.Incr("object-replication-status-" + *head.ReplicationStatus)
-				fmt.Println("Replication status " + k + "/" + b + *head.ReplicationStatus)
-			}
-
-			if head.ContentLength != nil {
-				count.IncrDelta("object-length", *head.ContentLength)
-				count.IncrDelta("object-length-"+b, *head.ContentLength)
-
-				if *head.ContentLength > maxContentLength {
-					fmt.Println("Big object", *aws.String(b), *aws.String(k))
-					count.Incr("big-object")
-					count.Incr("big-object-" + b)
-
-					tooBig = true
-				}
-			}
-
 			if theConfig["checkReplica"].BoolVal {
+				kb.wg.Done()
+				theCtx.wg.Done()
+
 				continue
 			}
 
@@ -413,25 +478,31 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 				// fmt.Println("Checking etag", b, k, etag)
 				// another head to another bucket
 				b2 := getReplicaBucket(b)
-				req := &s3.HeadObjectInput{
+				replReq := &s3.HeadObjectInput{
 					Key:    aws.String(k),
 					Bucket: aws.String(b2),
 				}
 
-				fmt.Println("About to call head", req)
+				fmt.Println("About to call head", replReq)
 				count.Incr("aws-head-object-etag-repl")
 
-				head, err := svc.HeadObject(req)
-				if err != nil {
-					logCountErrTag(err, "bucket/object"+k+"/"+b2, b2)
+				replHead, replErr := svc.HeadObject(replReq)
+				if replErr != nil {
+					logCountErrTag(replErr, "bucket/object"+k+"/"+b2, b2)
 				} else { // head succeeded
-					replEtag := head.ETag
+					replEtag := replHead.ETag
 					if replEtag == etag {
+						kb.wg.Done()
+						theCtx.wg.Done()
+
 						continue
 					}
 
 					fmt.Print("Object out of sync", k+"/"+b+"/"+b2)
 				}
+
+				kb.wg.Done()
+				theCtx.wg.Done()
 
 				continue
 			}
@@ -441,8 +512,12 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 				count.Incr("copy-start")
 				count.Incr("copy-start-" + b)
 
+				if theConfig["readOnly"].StrVal != danger {
+					break
+				}
+
 				if !(theConfig["setToDangerToReCopy"].StrVal == "danger") {
-					continue
+					break
 				}
 
 				if !tooBig {
@@ -464,8 +539,12 @@ func handleObject() { //nolint:gocognit, cyclop, gocyclo, maintidx
 					count.Incr("encrypt-bad")
 					count.Incr("encrypt-bad-" + b)
 
+					if theConfig["readOnly"].StrVal != danger {
+						break
+					}
+
 					if !(theConfig["setToDangerToReencrypt"].StrVal == "danger") {
-						continue
+						break
 					}
 
 					if !tooBig {
@@ -514,7 +593,7 @@ func makeTimestamp() int64 { // from stackoverflow
 }
 
 // go routine to get buckets and list their objects.
-func handleBucket() { //nolint:cyclop
+func handleBucket() { //nolint:cyclop,gocognit
 	count.Incr("aws-new-session-bare-2")
 
 	initSess, err := session.NewSession(&aws.Config{Region: aws.String(theConfig["awsRegion"].StrVal)})
@@ -550,7 +629,11 @@ func handleBucket() { //nolint:cyclop
 				log.Println("Can't determine region for bucket", b.bucket, err)
 			}
 
-			if region != "" && region != theConfig["awsRegion"].StrVal {
+			if region == "" {
+				region = theConfig["awsRegion"].StrVal
+			}
+
+			if region != theConfig["awsRegion"].StrVal {
 				sess, err = session.NewSession(sess.Config.Copy(&aws.Config{Region: aws.String(region)}))
 				if err != nil {
 					log.Println("Can't create session for region", region, b.bucket, err)
@@ -571,6 +654,12 @@ func handleBucket() { //nolint:cyclop
 			// start list objects
 			req := &s3.ListObjectsV2Input{Bucket: aws.String(b.bucket)}
 
+			prefix := theConfig["listFilesMatchingPrefix"].StrVal
+			if prefix != "" && prefix != "%%%" && prefix != "*" {
+				req.Prefix = aws.String(prefix)
+				log.Println("Filtering objects with prefix", prefix, "in", b.bucket)
+			}
+
 			count.Incr("aws-list-objects-v2")
 
 			wg := new(sync.WaitGroup) // different WG to make bucket wait for objects
@@ -585,7 +674,7 @@ func handleBucket() { //nolint:cyclop
 					count.Incr("object-chan-add")
 					runtime.Gosched()
 
-					theCtx.objectChan <- objectChanItem{b.acctID, b.bucket, key, wg}
+					theCtx.objectChan <- objectChanItem{b.acctID, b.bucket, key, region, wg}
 				}
 
 				count.Incr("object-page-exit")
@@ -716,9 +805,7 @@ func main() { //nolint:gocognit,cyclop
 	}
 
 	// save objects we have copied to disk
-	if theConfig["reCopyFiles"].BoolVal || theConfig["checkEtag"].BoolVal || theConfig["checkReplica"].BoolVal {
-		theCtx.doneObjects = set.New("doneObjects_2")
-	}
+	theCtx.doneObjects = set.New("doneObjects_2")
 
 	// filters for delete only these things under these things
 	if len(theConfig["useDeleteAnywayFile"].StrVal) > 0 {
@@ -831,6 +918,7 @@ func main() { //nolint:gocognit,cyclop
 		theCtx.wg.Wait()
 	}
 
+	count.Drain()
 	count.LogCounters()
 	log.Println("Exiting", makeTimestamp()-atomic.LoadInt64(&theCtx.lastObj))
 }

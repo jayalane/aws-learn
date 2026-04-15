@@ -198,7 +198,7 @@ func handleACL( //nolint:cyclop
 		count.Incr("bad-acl-found")
 	}
 
-	if doIt && theConfig["setToDangerToForceACL"].StrVal == danger {
+	if doIt && theConfig["readOnly"].StrVal == danger && theConfig["setToDangerToForceACL"].StrVal == danger {
 		// later retry -- but actually we have already retried
 		newACL, err := fixACL(*getACL, bucket, obj, bucketAcct)
 
@@ -308,7 +308,7 @@ func handleThreeACL(
 		return
 	}
 
-	shouldFix := theConfig["setToDangerToForceACL"].StrVal == danger
+	shouldFix := theConfig["readOnly"].StrVal == danger && theConfig["setToDangerToForceACL"].StrVal == danger
 
 	for _, readAcct := range strings.Split(theConfig["threeAcctAclReader"].StrVal, ",") {
 		if !checkThreeACL(*getACL, bucket, obj, readAcct) {
